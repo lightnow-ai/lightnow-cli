@@ -173,6 +173,39 @@ def test_sync_defaults_to_plaintext_export_mode() -> None:
         assert fetch.call_args.kwargs["secret_mode"] == "plaintext"
 
 
+def test_sync_passes_tenant_to_export_request() -> None:
+    """Client export sync uses the selected organization context."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "config.toml"
+        with (
+            patch(
+                "lightnow_cli.commands.integrations.require_access_token",
+                return_value="token",
+            ),
+            patch(
+                "lightnow_cli.commands.integrations.fetch_export",
+                return_value='[mcp_servers.github]\ncommand = "docker"\n',
+            ) as fetch,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "sync",
+                    "--client",
+                    "codex",
+                    "--tenant",
+                    "acme",
+                    "--config-path",
+                    str(target),
+                ],
+                input="y\n",
+            )
+
+    assert result.exit_code == 0
+    assert fetch.call_args.kwargs["tenant"] == "acme"
+
+
 def test_sync_json_writes_manifest_and_preserves_user_config() -> None:
     """JSON sync stores the LightNow-owned aliases in a sibling manifest."""
     runner = CliRunner()
@@ -507,6 +540,51 @@ def test_sync_runner_dry_run_does_not_fetch_plaintext_export() -> None:
     assert 'command = "lightnow"' in result.stdout
     assert "--server" in result.stdout
     assert not target.exists()
+
+
+def test_sync_runner_passes_tenant_to_profile_server_lookup() -> None:
+    """Runner sync builds organization-aware client commands from tenant profiles."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "config.toml"
+        with (
+            patch(
+                "lightnow_cli.commands.integrations.require_access_token",
+                return_value="token",
+            ),
+            patch(
+                "lightnow_cli.commands.integrations.fetch_profile_servers",
+                return_value={
+                    "servers": [
+                        {
+                            "alias": "sonarqube",
+                            "server_name": "io.github.sonarsource/sonarqube-mcp-server",
+                            "version": "1.2.3",
+                            "status": "linked",
+                        }
+                    ]
+                },
+            ) as fetch_profile,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "sync",
+                    "--client",
+                    "codex",
+                    "--tenant",
+                    "acme",
+                    "--runner",
+                    "--config-path",
+                    str(target),
+                    "--dry-run",
+                ],
+            )
+
+    assert result.exit_code == 0
+    assert fetch_profile.call_args.kwargs["tenant"] == "acme"
+    assert "--tenant" in result.stdout
+    assert "acme" in result.stdout
 
 
 def test_fetch_runtime_context_requests_local_runner_secret_context() -> None:

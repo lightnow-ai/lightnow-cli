@@ -151,8 +151,6 @@ class MCPRegistryClient:
             params["favorites"] = favorites
         if sort:
             params["sort"] = sort
-        if tenant:
-            params["tenant"] = tenant
         if cursor:
             params["cursor"] = cursor
 
@@ -163,6 +161,7 @@ class MCPRegistryClient:
                 params=params,
                 headers=self._get_headers(),
                 token=self.token,
+                tenant=tenant,
                 allow_refresh=self._refresh_on_unauthorized,
                 timeout=30.0,
             )
@@ -191,8 +190,6 @@ class MCPRegistryClient:
     ) -> Dict[str, Any]:
         """Get detailed information about a specific server."""
         params: Dict[str, Any] = {}
-        if tenant:
-            params["tenant"] = tenant
 
         encoded_server_id = quote(server_id, safe="")
         if version:
@@ -209,6 +206,7 @@ class MCPRegistryClient:
                 params=params,
                 headers=self._get_headers(),
                 token=self.token,
+                tenant=tenant,
                 allow_refresh=self._refresh_on_unauthorized,
                 timeout=30.0,
             )

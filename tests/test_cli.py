@@ -51,7 +51,7 @@ def test_cli_version(runner):
     """Test CLI version command."""
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
-    assert "LightNow CLI 1.0.1" in result.stdout
+    assert "LightNow CLI 1.0.2" in result.stdout
 
 
 def test_cli_help(runner):
@@ -173,6 +173,103 @@ def test_run_command_starts_profile_server(runner):
     fetch_context.assert_called_once()
     assert run_process.call_args.args[0] == ["python", "-m", "server"]
     assert run_process.call_args.kwargs["env"]["SONARQUBE_TOKEN"] == "secret"
+
+
+def test_run_command_passes_tenant_to_profile_and_context_requests(runner):
+    """The local runner keeps organization context for lookup and secret context."""
+    with (
+        patch(
+            "lightnow_cli.commands.runner.require_access_token",
+            return_value="token",
+        ),
+        patch(
+            "lightnow_cli.commands.runner.resolve_profile_server",
+            return_value={
+                "alias": "sonarqube",
+                "server_name": "io.github.sonarsource/sonarqube-mcp-server",
+                "version": "1.2.3",
+                "status": "linked",
+            },
+        ) as resolve,
+        patch(
+            "lightnow_cli.commands.runner.fetch_runtime_context",
+            return_value={"probe_request": {"transport": "stdio", "stdio": {}}},
+        ) as fetch_context,
+        patch(
+            "lightnow_cli.commands.runner.launch_config_from_context",
+            return_value=("python", ["-m", "server"], {}, None),
+        ),
+        patch(
+            "lightnow_cli.commands.runner.subprocess.run",
+            return_value=MagicMock(returncode=0),
+        ),
+    ):
+        result = runner.invoke(
+            app,
+            [
+                "run",
+                "--server",
+                "sonarqube",
+                "--profile",
+                "default",
+                "--tenant",
+                "acme",
+                "--api-url",
+                "https://registry-api.lightnow.local/v0.1",
+            ],
+        )
+
+    assert result.exit_code == 0
+    assert resolve.call_args.kwargs["tenant"] == "acme"
+    assert fetch_context.call_args.kwargs["tenant"] == "acme"
+
+
+def test_search_command_passes_tenant_context(runner):
+    """Search supports organization context from the public CLI surface."""
+    fake_client = MagicMock()
+    fake_client.list_servers = AsyncMock(return_value={"servers": []})
+
+    with patch("lightnow_cli.commands.query.get_client", return_value=fake_client):
+        result = runner.invoke(
+            app, ["search", "redis", "--tenant", "acme", "--limit", "5"]
+        )
+
+    assert result.exit_code == 0
+    assert fake_client.list_servers.call_args.kwargs["tenant"] == "acme"
+
+
+def test_favorites_command_passes_tenant_context(runner):
+    """Favorites supports organization-scoped favorites from the CLI."""
+    fake_client = MagicMock()
+    fake_client.list_servers = AsyncMock(return_value={"servers": []})
+
+    with patch("lightnow_cli.commands.query.get_client", return_value=fake_client):
+        result = runner.invoke(
+            app, ["favorites", "--scope", "tenant", "--tenant", "acme"]
+        )
+
+    assert result.exit_code == 0
+    assert fake_client.list_servers.call_args.kwargs["favorites"] == "tenant"
+    assert fake_client.list_servers.call_args.kwargs["tenant"] == "acme"
+
+
+def test_info_command_passes_tenant_context(runner):
+    """Server info supports organization context from the public CLI surface."""
+    fake_client = MagicMock()
+    fake_client.get_server_info = AsyncMock(
+        return_value={
+            "name": "io.github.test/server",
+            "version": "1.0.0",
+        }
+    )
+
+    with patch("lightnow_cli.commands.query.get_client", return_value=fake_client):
+        result = runner.invoke(
+            app, ["info", "io.github.test/server", "--tenant", "acme"]
+        )
+
+    assert result.exit_code == 0
+    assert fake_client.get_server_info.call_args.kwargs["tenant"] == "acme"
 
 
 def test_run_command_reports_expired_token(runner):

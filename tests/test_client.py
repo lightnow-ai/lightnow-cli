@@ -222,6 +222,21 @@ async def test_client_lists_servers(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_client_lists_servers_with_tenant_header(monkeypatch) -> None:
+    """Tenant context for list queries is sent as X-Tenant, not as a query param."""
+    fake = FakeHttpClient()
+    monkeypatch.setattr("lightnow_cli.client.httpx.AsyncClient", lambda: fake)
+
+    client = MCPRegistryClient(
+        base_url="https://registry-api.lightnow.local/v0.1", token="token"
+    )
+    await client.list_servers(favorites="tenant", tenant="tenant-uuid")
+
+    assert fake.last_headers["X-Tenant"] == "tenant-uuid"
+    assert "tenant" not in fake.last_params
+
+
+@pytest.mark.asyncio
 async def test_client_gets_server_info(monkeypatch) -> None:
     """Server info lookup returns the decoded registry payload."""
     fake = FakeHttpClient()
@@ -234,6 +249,21 @@ async def test_client_gets_server_info(monkeypatch) -> None:
 
     assert result == {"name": "github", "version": "1.0.0"}
     assert fake.last_url.endswith("/servers/github/versions/1.0.0")
+
+
+@pytest.mark.asyncio
+async def test_client_gets_server_info_with_tenant_header(monkeypatch) -> None:
+    """Tenant context for server detail lookup is sent as X-Tenant."""
+    fake = FakeHttpClient()
+    monkeypatch.setattr("lightnow_cli.client.httpx.AsyncClient", lambda: fake)
+
+    client = MCPRegistryClient(
+        base_url="https://registry-api.lightnow.local/v0.1", token="token"
+    )
+    await client.get_server_info("github", version="1.0.0", tenant="tenant-uuid")
+
+    assert fake.last_headers["X-Tenant"] == "tenant-uuid"
+    assert "tenant" not in fake.last_params
 
 
 @pytest.mark.asyncio
