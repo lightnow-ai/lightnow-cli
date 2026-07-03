@@ -11,6 +11,7 @@ from typer.testing import CliRunner
 from lightnow_cli.config import (
     DEFAULT_CLIENT_ID,
     DEFAULT_ISSUER,
+    LOCAL_ADMIN_API_URL,
     LOCAL_ISSUER,
     LOCAL_REGISTRY_API_URL,
 )
@@ -51,7 +52,7 @@ def test_cli_version(runner):
     """Test CLI version command."""
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
-    assert "LightNow CLI 1.0.2" in result.stdout
+    assert "LightNow CLI 1.0.3" in result.stdout
 
 
 def test_cli_help(runner):
@@ -69,6 +70,7 @@ def test_cli_help(runner):
     assert "status" in result.stdout
     assert "logout" in result.stdout
     assert "whoami" in result.stdout
+    assert "context" in result.stdout
     assert "list" not in result.stdout
     assert "│ auth " not in result.stdout
     assert "│ integrations " not in result.stdout
@@ -91,6 +93,7 @@ def test_login_help_is_customer_friendly(runner):
         "logout",
         "status",
         "whoami",
+        "context",
         "publish",
         "search",
         "favorites",
@@ -224,6 +227,57 @@ def test_run_command_passes_tenant_to_profile_and_context_requests(runner):
     assert fetch_context.call_args.kwargs["tenant"] == "acme"
 
 
+def test_run_command_uses_stored_context(runner):
+    """The local runner uses the stored organization context by default."""
+    with (
+        patch(
+            "lightnow_cli.commands.runner.require_access_token",
+            return_value="token",
+        ),
+        patch(
+            "lightnow_cli.commands.runner.config_manager.effective_tenant",
+            return_value="tenant-uuid",
+        ),
+        patch(
+            "lightnow_cli.commands.runner.resolve_profile_server",
+            return_value={
+                "alias": "sonarqube",
+                "server_name": "io.github.sonarsource/sonarqube-mcp-server",
+                "version": "1.2.3",
+                "status": "linked",
+            },
+        ) as resolve,
+        patch(
+            "lightnow_cli.commands.runner.fetch_runtime_context",
+            return_value={"probe_request": {"transport": "stdio", "stdio": {}}},
+        ) as fetch_context,
+        patch(
+            "lightnow_cli.commands.runner.launch_config_from_context",
+            return_value=("python", ["-m", "server"], {}, None),
+        ),
+        patch(
+            "lightnow_cli.commands.runner.subprocess.run",
+            return_value=MagicMock(returncode=0),
+        ),
+    ):
+        result = runner.invoke(
+            app,
+            [
+                "run",
+                "--server",
+                "sonarqube",
+                "--profile",
+                "default",
+                "--api-url",
+                "https://registry-api.lightnow.local/v0.1",
+            ],
+        )
+
+    assert result.exit_code == 0
+    assert resolve.call_args.kwargs["tenant"] == "tenant-uuid"
+    assert fetch_context.call_args.kwargs["tenant"] == "tenant-uuid"
+
+
 def test_search_command_passes_tenant_context(runner):
     """Search supports organization context from the public CLI surface."""
     fake_client = MagicMock()
@@ -236,6 +290,25 @@ def test_search_command_passes_tenant_context(runner):
 
     assert result.exit_code == 0
     assert fake_client.list_servers.call_args.kwargs["tenant"] == "acme"
+
+
+def test_search_command_uses_stored_context(runner):
+    """Search uses the stored context when --tenant is omitted."""
+    fake_client = MagicMock()
+    fake_client.list_servers = AsyncMock(return_value={"servers": []})
+
+    with (
+        patch("lightnow_cli.commands.query.get_client", return_value=fake_client),
+        patch(
+            "lightnow_cli.commands.query.config_manager.effective_tenant",
+            return_value="tenant-uuid",
+        ) as effective_tenant,
+    ):
+        result = runner.invoke(app, ["search", "redis"])
+
+    assert result.exit_code == 0
+    effective_tenant.assert_called_once_with(None)
+    assert fake_client.list_servers.call_args.kwargs["tenant"] == "tenant-uuid"
 
 
 def test_favorites_command_passes_tenant_context(runner):
@@ -401,7 +474,7 @@ def test_login_command_success(
 
     # Verify mocks were called
     mock_set_auth_config.assert_called_once_with(
-        DEFAULT_ISSUER, DEFAULT_CLIENT_ID, None
+        DEFAULT_ISSUER, DEFAULT_CLIENT_ID, None, None
     )
     mock_device_flow.assert_called_once_with(DEFAULT_ISSUER, DEFAULT_CLIENT_ID)
     mock_fetch_user_info.assert_called_once_with(DEFAULT_ISSUER, "mock-access-token")
@@ -430,6 +503,7 @@ def test_login_command_local_profile(
         LOCAL_ISSUER,
         DEFAULT_CLIENT_ID,
         LOCAL_REGISTRY_API_URL,
+        LOCAL_ADMIN_API_URL,
     )
     mock_device_flow.assert_called_once_with(LOCAL_ISSUER, DEFAULT_CLIENT_ID)
     mock_fetch_user_info.assert_called_once_with(LOCAL_ISSUER, "mock-access-token")

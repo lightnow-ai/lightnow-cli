@@ -12,8 +12,10 @@ from pydantic import BaseModel, Field
 DEFAULT_ISSUER = "https://auth.lightnow.ai/realms/lightnow"
 DEFAULT_CLIENT_ID = "lightnow-cli"
 DEFAULT_REGISTRY_API_URL = "https://registry-api.lightnow.ai/v0.1"
+DEFAULT_ADMIN_API_URL = "https://admin-api.lightnow.ai/v0/portal"
 LOCAL_ISSUER = "https://auth.lightnow.local/realms/lightnow-local"
 LOCAL_REGISTRY_API_URL = "https://registry-api.lightnow.local/v0.1"
+LOCAL_ADMIN_API_URL = "https://admin-api.lightnow.local/v0/portal"
 
 
 class Config(BaseModel):
@@ -24,7 +26,11 @@ class Config(BaseModel):
     issuer: Optional[str] = Field(default=DEFAULT_ISSUER)
     client_id: Optional[str] = Field(default=DEFAULT_CLIENT_ID)
     registry_api_url: Optional[str] = Field(default=DEFAULT_REGISTRY_API_URL)
+    admin_api_url: Optional[str] = Field(default=DEFAULT_ADMIN_API_URL)
     user_info: Optional[Dict[str, Any]] = None
+    context_type: str = Field(default="personal")
+    context_tenant: Optional[str] = None
+    context_label: Optional[str] = None
 
 
 class ConfigManager:
@@ -127,11 +133,14 @@ class ConfigManager:
         self.save_config(config)
 
     def clear_token(self) -> None:
-        """Clear stored access token."""
+        """Clear stored access token and account-scoped context."""
         config = self.load_config()
         config.access_token = None
         config.refresh_token = None
         config.user_info = None
+        config.context_type = "personal"
+        config.context_tenant = None
+        config.context_label = None
         self.save_config(config)
 
     def set_auth_config(
@@ -139,13 +148,49 @@ class ConfigManager:
         issuer: str,
         client_id: str,
         registry_api_url: Optional[str] = None,
+        admin_api_url: Optional[str] = None,
     ) -> None:
         """Set authentication configuration."""
         config = self.load_config()
         config.issuer = issuer
         config.client_id = client_id
         config.registry_api_url = registry_api_url or DEFAULT_REGISTRY_API_URL
+        config.admin_api_url = admin_api_url or DEFAULT_ADMIN_API_URL
         self.save_config(config)
+
+    def set_personal_context(self) -> None:
+        """Use the personal LightNow context by default."""
+        config = self.load_config()
+        config.context_type = "personal"
+        config.context_tenant = None
+        config.context_label = None
+        self.save_config(config)
+
+    def set_tenant_context(self, tenant_id: str, label: str) -> None:
+        """Use a tenant context by default."""
+        if not tenant_id:
+            raise ValueError("Tenant context requires a tenant id.")
+        config = self.load_config()
+        config.context_type = "tenant"
+        config.context_tenant = tenant_id
+        config.context_label = label
+        self.save_config(config)
+
+    def effective_tenant(self, explicit_tenant: Optional[str] = None) -> Optional[str]:
+        """Return explicit tenant or the stored default tenant context."""
+        if explicit_tenant:
+            return explicit_tenant
+        config = self.load_config()
+        if config.context_type == "tenant":
+            return config.context_tenant
+        return None
+
+    def context_display_name(self) -> str:
+        """Return a human-readable current context label."""
+        config = self.load_config()
+        if config.context_type == "tenant":
+            return config.context_label or config.context_tenant or "Organization"
+        return "Personal"
 
 
 # Global config manager instance

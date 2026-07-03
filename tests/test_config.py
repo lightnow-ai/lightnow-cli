@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from lightnow_cli.config import (
+    DEFAULT_ADMIN_API_URL,
     DEFAULT_CLIENT_ID,
     DEFAULT_ISSUER,
     DEFAULT_REGISTRY_API_URL,
@@ -48,6 +49,9 @@ def test_load_default_config(config_manager):
     assert config.issuer == DEFAULT_ISSUER
     assert config.client_id == DEFAULT_CLIENT_ID
     assert config.registry_api_url == DEFAULT_REGISTRY_API_URL
+    assert config.admin_api_url == DEFAULT_ADMIN_API_URL
+    assert config.context_type == "personal"
+    assert config.context_tenant is None
 
 
 def test_save_and_load_config(config_manager):
@@ -120,20 +124,54 @@ def test_auth_config_methods(config_manager):
     assert config.issuer == "https://auth.example.com"
     assert config.client_id == "my-client"
     assert config.registry_api_url == DEFAULT_REGISTRY_API_URL
+    assert config.admin_api_url == DEFAULT_ADMIN_API_URL
 
 
-def test_auth_config_accepts_registry_api_override(config_manager):
-    """Local auth can persist the matching local Registry API URL."""
+def test_auth_config_accepts_api_overrides(config_manager):
+    """Local auth can persist matching local API URLs."""
     config_manager.set_auth_config(
         "https://auth.example.com",
         "my-client",
         "https://registry-api.example.com/v0.1",
+        "https://admin-api.example.com/v0/portal",
     )
 
     config = config_manager.load_config()
     assert config.issuer == "https://auth.example.com"
     assert config.client_id == "my-client"
     assert config.registry_api_url == "https://registry-api.example.com/v0.1"
+    assert config.admin_api_url == "https://admin-api.example.com/v0/portal"
+
+
+def test_context_methods(config_manager):
+    """Stored context controls default tenant headers."""
+    assert config_manager.effective_tenant() is None
+    assert config_manager.context_display_name() == "Personal"
+
+    config_manager.set_tenant_context("tenant-uuid", "Acme (acme)")
+
+    assert config_manager.effective_tenant() == "tenant-uuid"
+    assert config_manager.effective_tenant("explicit-tenant") == "explicit-tenant"
+    assert config_manager.context_display_name() == "Acme (acme)"
+
+    config_manager.set_personal_context()
+
+    assert config_manager.effective_tenant() is None
+    assert config_manager.context_display_name() == "Personal"
+
+
+def test_logout_clears_context(config_manager):
+    """Logging out removes account-scoped organization context."""
+    config_manager.set_token("token", "refresh", None)
+    config_manager.set_tenant_context("tenant-uuid", "Acme (acme)")
+
+    config_manager.clear_token()
+
+    config = config_manager.load_config()
+    assert config.access_token is None
+    assert config.refresh_token is None
+    assert config.context_type == "personal"
+    assert config.context_tenant is None
 
 
 def test_config_file_permissions(config_manager):

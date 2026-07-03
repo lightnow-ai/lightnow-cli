@@ -9,6 +9,7 @@ from rich.table import Table
 from typing_extensions import Annotated
 
 from ..client import get_client
+from ..config import config_manager
 
 console = Console()
 
@@ -43,11 +44,12 @@ def search_servers(
 
     try:
         client = get_client()
+        effective_tenant = config_manager.effective_tenant(tenant)
         result = asyncio.run(
             client.list_servers(
                 search=query,
                 sort=sort,
-                tenant=tenant,
+                tenant=effective_tenant,
                 limit=limit,
                 cursor=cursor,
             )
@@ -109,11 +111,12 @@ def favorite_servers(
 
     try:
         client = get_client()
+        effective_tenant = config_manager.effective_tenant(tenant)
         result = asyncio.run(
             client.list_servers(
                 favorites=normalized_scope,
                 sort=sort,
-                tenant=tenant,
+                tenant=effective_tenant,
                 limit=limit,
                 cursor=cursor,
             )
@@ -208,8 +211,13 @@ def server_info(
 
     try:
         client = get_client()
+        effective_tenant = config_manager.effective_tenant(tenant)
         result = asyncio.run(
-            client.get_server_info(server_id=server_id, version=version, tenant=tenant)
+            client.get_server_info(
+                server_id=server_id,
+                version=version,
+                tenant=effective_tenant,
+            )
         )
         payload = server_payload(result)
 

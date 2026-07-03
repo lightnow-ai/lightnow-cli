@@ -17,6 +17,7 @@ from typing_extensions import Annotated
 from ..config import (
     DEFAULT_CLIENT_ID,
     DEFAULT_ISSUER,
+    LOCAL_ADMIN_API_URL,
     LOCAL_ISSUER,
     LOCAL_REGISTRY_API_URL,
     config_manager,
@@ -380,12 +381,14 @@ def login(
         resolved_issuer = issuer or (LOCAL_ISSUER if local else DEFAULT_ISSUER)
         resolved_client_id = client_id or DEFAULT_CLIENT_ID
         resolved_registry_api_url = LOCAL_REGISTRY_API_URL if local else None
+        resolved_admin_api_url = LOCAL_ADMIN_API_URL if local else None
 
         # Store auth config
         config_manager.set_auth_config(
             resolved_issuer,
             resolved_client_id,
             resolved_registry_api_url,
+            resolved_admin_api_url,
         )
 
         # Perform device code flow
@@ -445,6 +448,8 @@ def status() -> None:
     email = user_info.get("email")
     if email:
         console.print(f"Email: [bold]{email}[/bold]")
+
+    console.print(f"Context: [bold]{config_manager.context_display_name()}[/bold]")
 
     exp = user_info.get("exp")
     if exp:

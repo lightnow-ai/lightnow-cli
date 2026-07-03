@@ -206,6 +206,41 @@ def test_sync_passes_tenant_to_export_request() -> None:
     assert fetch.call_args.kwargs["tenant"] == "acme"
 
 
+def test_sync_uses_stored_context_when_tenant_is_omitted() -> None:
+    """Client export sync uses the stored organization context by default."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "config.toml"
+        with (
+            patch(
+                "lightnow_cli.commands.integrations.require_access_token",
+                return_value="token",
+            ),
+            patch(
+                "lightnow_cli.commands.integrations.config_manager.effective_tenant",
+                return_value="tenant-uuid",
+            ),
+            patch(
+                "lightnow_cli.commands.integrations.fetch_export",
+                return_value='[mcp_servers.github]\ncommand = "docker"\n',
+            ) as fetch,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "sync",
+                    "--client",
+                    "codex",
+                    "--config-path",
+                    str(target),
+                ],
+                input="y\n",
+            )
+
+    assert result.exit_code == 0
+    assert fetch.call_args.kwargs["tenant"] == "tenant-uuid"
+
+
 def test_sync_json_writes_manifest_and_preserves_user_config() -> None:
     """JSON sync stores the LightNow-owned aliases in a sibling manifest."""
     runner = CliRunner()
@@ -585,6 +620,53 @@ def test_sync_runner_passes_tenant_to_profile_server_lookup() -> None:
     assert fetch_profile.call_args.kwargs["tenant"] == "acme"
     assert "--tenant" in result.stdout
     assert "acme" in result.stdout
+
+
+def test_sync_runner_uses_stored_context_in_generated_wrappers() -> None:
+    """Runner sync embeds the stored organization context in client wrappers."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "config.toml"
+        with (
+            patch(
+                "lightnow_cli.commands.integrations.require_access_token",
+                return_value="token",
+            ),
+            patch(
+                "lightnow_cli.commands.integrations.config_manager.effective_tenant",
+                return_value="tenant-uuid",
+            ),
+            patch(
+                "lightnow_cli.commands.integrations.fetch_profile_servers",
+                return_value={
+                    "servers": [
+                        {
+                            "alias": "sonarqube",
+                            "server_name": "io.github.sonarsource/sonarqube-mcp-server",
+                            "version": "1.2.3",
+                            "status": "linked",
+                        }
+                    ]
+                },
+            ) as fetch_profile,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "sync",
+                    "--client",
+                    "codex",
+                    "--runner",
+                    "--config-path",
+                    str(target),
+                    "--dry-run",
+                ],
+            )
+
+    assert result.exit_code == 0
+    assert fetch_profile.call_args.kwargs["tenant"] == "tenant-uuid"
+    assert "--tenant" in result.stdout
+    assert "tenant-uuid" in result.stdout
 
 
 def test_fetch_runtime_context_requests_local_runner_secret_context() -> None:

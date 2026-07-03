@@ -121,6 +121,7 @@ def sync(
         console.print(f"[yellow]{exc}[/yellow]")
         raise typer.Exit(1)
 
+    effective_tenant = config_manager.effective_tenant(tenant)
     registry_api_url = api_url or config_manager.load_config().registry_api_url
     if not registry_api_url:
         raise_bad_argument(
@@ -133,7 +134,7 @@ def sync(
             profile_payload = fetch_profile_servers(
                 api_url=registry_api_url,
                 token=bearer_token,
-                tenant=tenant,
+                tenant=effective_tenant,
                 profile=profile,
             )
             generated = build_runner_export(
@@ -141,13 +142,13 @@ def sync(
                 client=client,
                 export_format=export_format,
                 profile=profile,
-                tenant=tenant,
+                tenant=effective_tenant,
             )
         else:
             generated = fetch_export(
                 api_url=registry_api_url,
                 token=bearer_token,
-                tenant=tenant,
+                tenant=effective_tenant,
                 profile=profile,
                 client=client,
                 export_format=export_format,

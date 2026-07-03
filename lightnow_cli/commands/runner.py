@@ -62,6 +62,7 @@ def run(
     try:
         token = require_access_token()
         registry_api_url = api_url or config_manager.load_config().registry_api_url
+        effective_tenant = config_manager.effective_tenant(tenant)
         if not registry_api_url:
             raise ValueError(
                 "Registry API URL required. Configure the CLI or pass --api-url."
@@ -69,14 +70,14 @@ def run(
         selected = resolve_profile_server(
             api_url=registry_api_url,
             token=token,
-            tenant=tenant,
+            tenant=effective_tenant,
             profile=profile,
             server=server,
         )
         context = fetch_runtime_context(
             api_url=registry_api_url,
             token=token,
-            tenant=tenant,
+            tenant=effective_tenant,
             profile=profile,
             server_name=str(selected["server_name"]),
             version=str(selected["version"]),

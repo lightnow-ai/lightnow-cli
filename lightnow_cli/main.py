@@ -4,7 +4,7 @@ import typer
 from typing_extensions import Annotated
 
 from . import __version__
-from .commands import auth, integrations, publish, query, runner, validate
+from .commands import auth, context, integrations, publish, query, runner, validate
 from .tls import configure_tls_trust_store
 
 configure_tls_trust_store()
@@ -19,6 +19,7 @@ app.command("login")(auth.login)
 app.command("logout")(auth.logout)
 app.command("status")(auth.status)
 app.command("whoami")(auth.whoami)
+app.command("context")(context.context)
 app.command("publish")(publish.publish)
 app.command("search")(query.search_servers)
 app.command("favorites")(query.favorite_servers)

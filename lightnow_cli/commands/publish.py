@@ -9,6 +9,7 @@ from rich.console import Console
 from typing_extensions import Annotated
 
 from ..client import get_client
+from ..config import config_manager
 from ..validation import validate_artifacts
 
 console = Console()
@@ -74,6 +75,7 @@ def publish(
     try:
         # Get client and publish
         client = get_client()
+        effective_tenant = config_manager.effective_tenant(tenant)
         console.print("Publishing to registry...")
 
         result = asyncio.run(
@@ -81,7 +83,7 @@ def publish(
                 server_json=server_data,
                 docs_content=docs_content,
                 spec_content=spec_data,
-                tenant=tenant,
+                tenant=effective_tenant,
             )
         )
 
