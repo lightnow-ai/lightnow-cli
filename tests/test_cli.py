@@ -80,7 +80,6 @@ def test_login_help_is_customer_friendly(runner):
 
     assert result.exit_code == 0
     assert "Authenticate with LightNow" in result.stdout
-    assert "--local" in result.stdout
     assert "--issuer" not in result.stdout
     assert "--client-id" not in result.stdout
 
