@@ -1,5 +1,7 @@
 # LightNow CLI
 
+[![PyPI](https://img.shields.io/pypi/v/lightnow-cli.svg)](https://pypi.org/project/lightnow-cli/)
+
 The **LightNow CLI** connects your local MCP clients with LightNow.
 
 Use it to discover MCP servers, sync client configurations, and run
