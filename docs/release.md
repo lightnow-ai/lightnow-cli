@@ -31,8 +31,8 @@ Before publishing a release:
    - Environment: `pypi`
 6. Create a signed or otherwise traceable Git tag:
    ```bash
-   git tag v1.0.0
-   git push origin v1.0.0
+   git tag vX.Y.Z
+   git push origin vX.Y.Z
    ```
 7. Verify the GitHub Actions `Release` workflow:
    - tests pass,

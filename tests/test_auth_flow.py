@@ -26,7 +26,8 @@ class FakeResponse:
 class FakeDeviceClient:
     """AsyncClient stub that completes device authorization after one poll."""
 
-    def __init__(self) -> None:
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        assert kwargs.get("timeout") == auth.AUTH_HTTP_TIMEOUT
         self.polls = 0
 
     async def __aenter__(self) -> "FakeDeviceClient":
@@ -103,6 +104,11 @@ async def test_device_code_flow_opens_browser_and_returns_token(monkeypatch) -> 
     assert opened == ["https://auth.lightnow.local/device?user_code=TEST"]
 
 
+def test_describe_http_error_names_empty_errors() -> None:
+    """HTTP errors with empty string output still produce useful messages."""
+    assert auth.describe_http_error(auth.httpx.ReadTimeout("")) == "ReadTimeout"
+
+
 def test_get_user_info_decodes_unverified_jwt_claims_for_refresh_hints() -> None:
     """The CLI can inspect local JWT metadata without treating it as identity."""
     token = (
@@ -135,6 +141,9 @@ async def test_fetch_user_info_uses_oidc_userinfo_endpoint(monkeypatch) -> None:
     """Identity is fetched from the issuer instead of trusting local JWT claims."""
 
     class FakeUserInfoClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            assert kwargs.get("timeout") == auth.AUTH_HTTP_TIMEOUT
+
         async def __aenter__(self) -> "FakeUserInfoClient":
             return self
 
@@ -209,7 +218,11 @@ async def test_refresh_access_token_returns_new_tokens(monkeypatch) -> None:
         }
 
     monkeypatch.setattr(auth, "discover_oidc_endpoints", endpoints)
-    monkeypatch.setattr(auth.httpx, "AsyncClient", lambda: fake)
+    monkeypatch.setattr(
+        auth.httpx,
+        "AsyncClient",
+        lambda *args, **kwargs: fake,
+    )
 
     token_data = await auth.refresh_access_token(
         "https://auth.lightnow.local/realms/lightnow",
@@ -234,7 +247,11 @@ async def test_refresh_access_token_invalid_grant_is_expired(monkeypatch) -> Non
         }
 
     monkeypatch.setattr(auth, "discover_oidc_endpoints", endpoints)
-    monkeypatch.setattr(auth.httpx, "AsyncClient", lambda: fake)
+    monkeypatch.setattr(
+        auth.httpx,
+        "AsyncClient",
+        lambda *args, **kwargs: fake,
+    )
 
     with pytest.raises(auth.AccessTokenExpired, match="Access token has expired"):
         await auth.refresh_access_token(

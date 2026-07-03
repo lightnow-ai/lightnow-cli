@@ -25,6 +25,7 @@ from ..config import (
 console = Console()
 app = typer.Typer(help="Authentication commands")
 
+AUTH_HTTP_TIMEOUT = 30.0
 ACCESS_TOKEN_EXPIRED_MESSAGE = (
     "Access token has expired. Please run 'lightnow login' again."
 )
@@ -39,6 +40,14 @@ class AuthError(Exception):
 
 class AccessTokenExpired(AuthError):
     """The stored access token is expired and cannot be refreshed."""
+
+
+def describe_http_error(error: httpx.HTTPError) -> str:
+    """Return a useful message for httpx errors that may stringify empty."""
+    message = str(error).strip()
+    if message:
+        return message
+    return error.__class__.__name__
 
 
 def open_authorization_url(verification_uri: str) -> bool:
@@ -59,7 +68,7 @@ def pkce_challenge(verifier: str) -> str:
 
 async def discover_oidc_endpoints(issuer: str) -> Dict[str, str]:
     """Discover the OIDC endpoints required by the CLI."""
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=AUTH_HTTP_TIMEOUT) as client:
         try:
             discovery_response = await client.get(
                 f"{issuer}/.well-known/openid-configuration"
@@ -69,7 +78,9 @@ async def discover_oidc_endpoints(issuer: str) -> Dict[str, str]:
             if not isinstance(discovery, dict):
                 raise AuthError("OIDC discovery response is not a JSON object")
         except httpx.HTTPError as e:
-            raise AuthError(f"Failed to discover OIDC endpoints: {e}") from e
+            raise AuthError(
+                f"Failed to discover OIDC endpoints: {describe_http_error(e)}"
+            ) from e
 
     device_authorization_endpoint = discovery.get("device_authorization_endpoint")
     token_endpoint = discovery.get("token_endpoint")
@@ -91,7 +102,7 @@ async def device_code_flow(issuer: str, client_id: str) -> Dict[str, Any]:
     """Perform OIDC Device Code Flow authentication."""
     endpoints = await discover_oidc_endpoints(issuer)
     code_verifier = generate_pkce_verifier()
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=AUTH_HTTP_TIMEOUT) as client:
         # Start device authorization
         try:
             device_response = await client.post(
@@ -107,7 +118,9 @@ async def device_code_flow(issuer: str, client_id: str) -> Dict[str, Any]:
             device_data = device_response.json()
 
         except httpx.HTTPError as e:
-            raise AuthError(f"Failed to start device authorization: {e}")
+            raise AuthError(
+                f"Failed to start device authorization: {describe_http_error(e)}"
+            )
 
         # Show user instructions
         console.print("\n[bold blue]Device Authorization Required[/bold blue]")
@@ -165,7 +178,7 @@ async def device_code_flow(issuer: str, client_id: str) -> Dict[str, Any]:
                         raise AuthError(f"Authorization failed: {error}")
 
             except httpx.HTTPError as e:
-                raise AuthError(f"Failed to poll for token: {e}")
+                raise AuthError(f"Failed to poll for token: {describe_http_error(e)}")
 
         raise AuthError("Authorization timed out")
 
@@ -175,7 +188,7 @@ async def refresh_access_token(
 ) -> Dict[str, Any]:
     """Refresh the access token using the stored refresh token."""
     endpoints = await discover_oidc_endpoints(issuer)
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=AUTH_HTTP_TIMEOUT) as client:
         try:
             token_response = await client.post(
                 endpoints["token_endpoint"],
@@ -186,7 +199,9 @@ async def refresh_access_token(
                 },
             )
         except httpx.HTTPError as e:
-            raise AuthError(f"Failed to refresh access token: {e}") from e
+            raise AuthError(
+                f"Failed to refresh access token: {describe_http_error(e)}"
+            ) from e
 
     if token_response.status_code == 200:
         token_data = token_response.json()
@@ -239,14 +254,16 @@ async def fetch_user_info(issuer: str, token: str) -> Dict[str, Any]:
     if not userinfo_endpoint:
         raise AuthError("OIDC provider does not expose a userinfo endpoint.")
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=AUTH_HTTP_TIMEOUT) as client:
         try:
             response = await client.get(
                 userinfo_endpoint,
                 headers={"Authorization": f"Bearer {token}"},
             )
         except httpx.HTTPError as exc:
-            raise AuthError(f"Failed to fetch user information: {exc}") from exc
+            raise AuthError(
+                f"Failed to fetch user information: {describe_http_error(exc)}"
+            ) from exc
 
     if response.status_code == 401:
         raise AccessTokenExpired(ACCESS_TOKEN_EXPIRED_MESSAGE)

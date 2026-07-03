@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "lightnow-cli"
-version = "1.0.0"
+version = "1.0.1"
 description = "Official LightNow CLI for MCP registry discovery, client config sync, and local MCP runner workflows"
 authors = [{name = "LightNow Team"}]
 license = {text = "Apache-2.0"}
