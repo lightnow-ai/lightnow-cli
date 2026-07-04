@@ -81,6 +81,18 @@ files:
 lightnow sync --client codex --runner
 ```
 
+For the M2 Local Proxy flow, write a single Codex MCP entry that points to the
+local LightNow proxy instead of writing one entry per MCP server:
+
+```bash
+lightnow sync --client codex --local-proxy
+```
+
+This currently writes a localhost Streamable HTTP MCP entry for Codex. The
+Local Proxy keeps server config and secrets outside the normal client config.
+The older `--runner` flag remains a compatibility path that writes one
+`lightnow run` wrapper per profile server.
+
 ## Run One Server
 
 Run a configured MCP server through LightNow:

@@ -19,11 +19,13 @@ from lightnow_cli.commands.integrations import (
     BEGIN,
     END,
     JSON_MANIFEST_SUFFIX,
+    build_local_proxy_export,
     build_runner_export,
     extract_json_managed,
     fetch_export,
     patch_config,
     redact,
+    render_local_proxy_codex_toml,
     render_runner_config,
     secure_write_text,
 )
@@ -364,6 +366,70 @@ def test_runner_export_for_codex_uses_lightnow_run_without_secret_values() -> No
     assert "top-secret" not in generated
 
 
+def test_local_proxy_export_for_codex_writes_one_http_server() -> None:
+    """Local Proxy Mode writes one Codex MCP entry with proven approval defaults."""
+    generated = build_local_proxy_export(
+        client="codex",
+        export_format="toml",
+        local_proxy_url="http://127.0.0.1:8080/mcp",
+    )
+    payload = tomllib.loads(generated)
+
+    assert payload == {
+        "mcp_servers": {
+            "lightnow": {
+                "url": "http://127.0.0.1:8080/mcp",
+                "default_tools_approval_mode": "approve",
+            }
+        }
+    }
+    assert "command" not in generated
+    assert "args" not in generated
+
+
+def test_local_proxy_export_rejects_non_local_urls() -> None:
+    """Local Proxy Mode must not silently configure a hosted endpoint."""
+    for url in [
+        "https://proxy.lightnow.ai/mcp",
+        "http://proxy.lightnow.ai/mcp",
+        "https://localhost:8080/mcp",
+        "http://localhost/mcp",
+        "http://localhost:8080.evil.test/mcp",
+    ]:
+        try:
+            build_local_proxy_export(
+                client="codex",
+                export_format="toml",
+                local_proxy_url=url,
+            )
+        except ValueError as exc:
+            assert "localhost" in str(exc)
+        else:
+            raise AssertionError(f"expected ValueError for {url}")
+
+
+def test_local_proxy_export_rejects_unsupported_clients() -> None:
+    """The first Local Proxy config writer is intentionally Codex-only."""
+    try:
+        build_local_proxy_export(
+            client="cursor",
+            export_format="json",
+            local_proxy_url="http://127.0.0.1:8080/mcp",
+        )
+    except ValueError as exc:
+        assert "Codex TOML" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_render_local_proxy_codex_toml_uses_approval_mode() -> None:
+    """Codex non-interactive tool calls require explicit approval config."""
+    generated = render_local_proxy_codex_toml("http://localhost:8080/mcp")
+
+    assert 'url = "http://localhost:8080/mcp"' in generated
+    assert 'default_tools_approval_mode = "approve"' in generated
+
+
 def test_runner_export_rejects_custom_servers() -> None:
     """Custom servers must be registry-linked before runner sync."""
     try:
@@ -575,6 +641,105 @@ def test_sync_runner_dry_run_does_not_fetch_plaintext_export() -> None:
     assert 'command = "lightnow"' in result.stdout
     assert "--server" in result.stdout
     assert not target.exists()
+
+
+def test_sync_local_proxy_dry_run_writes_one_codex_entry_without_fetching_exports() -> (
+    None
+):
+    """Local Proxy dry-run writes only the proxy binding and skips server export APIs."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "config.toml"
+        with (
+            patch(
+                "lightnow_cli.commands.integrations.require_access_token",
+                return_value="token",
+            ),
+            patch(
+                "lightnow_cli.commands.integrations.fetch_profile_servers",
+                side_effect=AssertionError(
+                    "local proxy sync must not fetch profile servers"
+                ),
+            ),
+            patch(
+                "lightnow_cli.commands.integrations.fetch_export",
+                side_effect=AssertionError(
+                    "local proxy sync must not fetch client exports"
+                ),
+            ),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "sync",
+                    "--client",
+                    "codex",
+                    "--local-proxy",
+                    "--config-path",
+                    str(target),
+                    "--dry-run",
+                ],
+            )
+
+    assert result.exit_code == 0
+    assert "[mcp_servers.lightnow]" in result.stdout
+    assert 'default_tools_approval_mode = "approve"' in result.stdout
+    assert "--server" not in result.stdout
+    assert not target.exists()
+
+
+def test_sync_local_proxy_rejects_runner_mode_conflict() -> None:
+    """Local Proxy Mode and legacy per-server runner wrappers are mutually exclusive."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "config.toml"
+        result = runner.invoke(
+            app,
+            [
+                "sync",
+                "--client",
+                "codex",
+                "--runner",
+                "--local-proxy",
+                "--config-path",
+                str(target),
+            ],
+        )
+
+    assert result.exit_code == 2
+    assert "either --runner or --local-proxy" in result.stdout
+
+
+def test_sync_local_proxy_patches_existing_codex_config() -> None:
+    """Local Proxy sync preserves user Codex config and writes one managed block."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "config.toml"
+        target.write_text('model = "gpt-5.5"\n')
+        with patch(
+            "lightnow_cli.commands.integrations.require_access_token",
+            return_value="token",
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "sync",
+                    "--client",
+                    "codex",
+                    "--local-proxy",
+                    "--local-proxy-url",
+                    "http://localhost:8765/mcp",
+                    "--config-path",
+                    str(target),
+                ],
+            )
+            patched = target.read_text()
+
+    assert result.exit_code == 0
+    assert 'model = "gpt-5.5"' in patched
+    assert "[mcp_servers.lightnow]" in patched
+    assert 'url = "http://localhost:8765/mcp"' in patched
+    assert 'default_tools_approval_mode = "approve"' in patched
 
 
 def test_sync_runner_passes_tenant_to_profile_server_lookup() -> None:
