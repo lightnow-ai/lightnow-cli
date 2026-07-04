@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -215,6 +216,8 @@ def sync(
             if export_format == "json"
             else {"aliases": [], "input_ids": []}
         )
+        if local_proxy and client == "codex" and export_format == "toml":
+            existing = prepare_codex_local_proxy_config(existing)
         patched = patch_config(
             existing,
             generated,
@@ -811,6 +814,38 @@ def patch_config(
     if existing.strip() == "":
         return block
     return existing.rstrip() + "\n\n" + block
+
+
+TOML_TABLE_RE = re.compile(r"^\s*\[+\s*([^\]]+?)\s*\]+\s*(?:#.*)?$")
+
+
+def prepare_codex_local_proxy_config(existing: str) -> str:
+    """Remove direct Codex MCP server entries before writing Local Proxy Mode."""
+    without_managed = remove_managed_block(existing)
+    return strip_codex_mcp_server_tables(without_managed)
+
+
+def remove_managed_block(existing: str) -> str:
+    """Remove an existing LightNow managed block from a text config."""
+    if BEGIN not in existing or END not in existing:
+        return existing
+    before, rest = existing.split(BEGIN, 1)
+    _, after = rest.split(END, 1)
+    return before.rstrip() + "\n\n" + after.lstrip()
+
+
+def strip_codex_mcp_server_tables(existing: str) -> str:
+    """Strip Codex [mcp_servers.*] TOML tables while preserving other config."""
+    kept: list[str] = []
+    skipping = False
+    for line in existing.splitlines():
+        match = TOML_TABLE_RE.match(line)
+        if match:
+            name = match.group(1).strip()
+            skipping = name == "mcp_servers" or name.startswith("mcp_servers.")
+        if not skipping:
+            kept.append(line)
+    return "\n".join(kept).strip() + ("\n" if kept else "")
 
 
 def patch_json_config(

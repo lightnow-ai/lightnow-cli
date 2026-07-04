@@ -26,6 +26,7 @@ from lightnow_cli.commands.integrations import (
     fetch_export,
     import_profile_config,
     patch_config,
+    prepare_codex_local_proxy_config,
     print_import_summary,
     redact,
     render_local_proxy_codex_toml,
@@ -744,13 +745,44 @@ def test_sync_local_proxy_rejects_runner_mode_conflict() -> None:
     assert "either --runner or --local-proxy" in result.stdout
 
 
-def test_sync_local_proxy_patches_existing_codex_config() -> None:
-    """Local Proxy sync preserves user Codex config and writes one managed block."""
+def test_prepare_codex_local_proxy_config_removes_direct_mcp_servers() -> None:
+    """Local Proxy Mode removes direct Codex MCP servers before patching."""
+    existing = """
+model = "gpt-5.5"
+
+[mcp_servers.github]
+command = "docker"
+
+[mcp_servers.github.env]
+GITHUB_TOKEN = "secret"
+
+[profiles.enterprise]
+model = "gpt-5"
+"""
+
+    prepared = prepare_codex_local_proxy_config(existing)
+
+    assert 'model = "gpt-5.5"' in prepared
+    assert "[profiles.enterprise]" in prepared
+    assert "[mcp_servers.github]" not in prepared
+    assert "GITHUB_TOKEN" not in prepared
+
+
+def test_sync_local_proxy_replaces_existing_codex_mcp_servers() -> None:
+    """Local Proxy sync preserves user Codex config and leaves only one MCP server."""
     runner = CliRunner()
     with tempfile.TemporaryDirectory() as tmp:
         target = Path(tmp) / "config.toml"
         proxy_config = Path(tmp) / "mcp-proxy.yaml"
-        target.write_text('model = "gpt-5.5"\n')
+        target.write_text(
+            'model = "gpt-5.5"\n\n'
+            "[mcp_servers.github]\n"
+            'command = "docker"\n\n'
+            "[mcp_servers.github.env]\n"
+            'GITHUB_TOKEN = "secret"\n\n'
+            "[profiles.enterprise]\n"
+            'model = "gpt-5"\n'
+        )
         with patch(
             "lightnow_cli.commands.integrations.require_access_token",
             return_value="token",
@@ -775,7 +807,10 @@ def test_sync_local_proxy_patches_existing_codex_config() -> None:
 
     assert result.exit_code == 0
     assert 'model = "gpt-5.5"' in patched
+    assert "[profiles.enterprise]" in patched
     assert "[mcp_servers.lightnow]" in patched
+    assert "[mcp_servers.github]" not in patched
+    assert "GITHUB_TOKEN" not in patched
     assert 'command = "mcp-proxy"' in patched
     assert str(proxy_config) in patched
     assert '"--transport", "stdio"' in patched
