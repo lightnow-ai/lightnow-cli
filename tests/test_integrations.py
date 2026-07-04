@@ -826,6 +826,11 @@ def test_sync_local_proxy_replaces_existing_codex_mcp_servers() -> None:
         "profile": "default",
         "path": "/mcp",
         "sync_from_lightnow": True,
+        "client_name": "codex",
+        "client_version": None,
+        "runner_name": "lightnow-local-proxy",
+        "runner_version": "0.1.0",
+        "client_transport": "stdio",
     }
     assert proxy_payload["registry_api"]["use_cli_session"] is True
     assert proxy_payload["registry_api"]["include_secrets"] is True
@@ -845,6 +850,8 @@ def test_build_local_proxy_config_can_pin_tenant_context() -> None:
     payload = yaml.safe_load(generated)
 
     assert payload["local_proxy"]["profile"] == "engineering"
+    assert payload["local_proxy"]["client_name"] == "codex"
+    assert payload["local_proxy"]["runner_name"] == "lightnow-local-proxy"
     assert (
         payload["registry_api"]["base_url"]
         == "https://registry-api.lightnow.local/v0.1"

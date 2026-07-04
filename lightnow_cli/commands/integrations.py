@@ -189,6 +189,7 @@ def sync(
             proxy_config = build_local_proxy_config(
                 local_proxy_url=local_proxy_url,
                 profile=profile,
+                client=client,
                 registry_api_url=registry_api_url,
                 tenant=effective_tenant,
                 registry_ca_file=registry_ca_file,
@@ -417,6 +418,7 @@ def build_local_proxy_config(
     *,
     local_proxy_url: str,
     profile: str,
+    client: str = "codex",
     registry_api_url: str,
     tenant: Optional[str],
     registry_ca_file: Optional[Path] = None,
@@ -455,6 +457,11 @@ def build_local_proxy_config(
             "profile": profile,
             "path": parsed.path or "/mcp",
             "sync_from_lightnow": True,
+            "client_name": client,
+            "client_version": None,
+            "runner_name": "lightnow-local-proxy",
+            "runner_version": "0.1.0",
+            "client_transport": "stdio",
         },
         "auth": {
             "enabled": False,
