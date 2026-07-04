@@ -259,6 +259,88 @@ def sync(
     console.print(f"[green]Synced {client} profile {profile} to {target}[/green]")
 
 
+@app.command("import-config")
+def import_config(
+    client: Annotated[str, typer.Option("--client", help="Source MCP client")],
+    profile: Annotated[
+        str, typer.Option("--profile", help="Runtime profile to import into")
+    ] = "default",
+    tenant: Annotated[
+        Optional[str],
+        typer.Option("--tenant", help="Tenant id or slug, sent as X-Tenant"),
+    ] = None,
+    config_path: Annotated[
+        Optional[Path],
+        typer.Option("--config-path", help="Source client config file"),
+    ] = None,
+    api_url: Annotated[
+        Optional[str],
+        typer.Option("--api-url", help="Registry API base URL"),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Preview the import without applying it"),
+    ] = False,
+    replace: Annotated[
+        bool,
+        typer.Option("--replace", help="Replace the target profile's server list"),
+    ] = False,
+) -> None:
+    """Import an existing MCP client configuration into a LightNow profile."""
+    if client not in CLIENT_DEFAULTS:
+        raise_bad_argument("Unsupported client", f"Use one of: {', '.join(CLIENTS)}")
+    _, default_path = CLIENT_DEFAULTS[client]
+    if client != "codex":
+        raise_bad_argument(
+            "Unsupported import client", "Config import currently supports Codex."
+        )
+
+    target = (config_path or default_path).expanduser()
+    if not target.exists():
+        raise_bad_argument("Config file not found", str(target))
+
+    try:
+        bearer_token = require_access_token()
+    except AccessTokenExpired:
+        console.print(f"[red]{ACCESS_TOKEN_EXPIRED_MESSAGE}[/red]")
+        raise typer.Exit(1)
+    except AuthError as exc:
+        console.print(f"[yellow]{exc}[/yellow]")
+        raise typer.Exit(1)
+
+    effective_tenant = config_manager.effective_tenant(tenant)
+    registry_api_url = api_url or config_manager.load_config().registry_api_url
+    if not registry_api_url:
+        raise_bad_argument(
+            "Registry API URL required", "Configure the CLI or pass --api-url."
+        )
+    assert registry_api_url is not None
+
+    try:
+        content = target.read_text(encoding="utf-8")
+        result = import_profile_config(
+            api_url=registry_api_url,
+            token=bearer_token,
+            tenant=effective_tenant,
+            source=client,
+            content=content,
+            profile=profile,
+            dry_run=dry_run,
+            replace=replace,
+        )
+    except OSError as exc:
+        console.print(f"[bold red]Integration import failed:[/bold red] {exc}")
+        raise typer.Exit(1) from exc
+    except AccessTokenExpired:
+        console.print(f"[red]{ACCESS_TOKEN_EXPIRED_MESSAGE}[/red]")
+        raise typer.Exit(1)
+    except ValueError as exc:
+        console.print(f"[bold red]Integration import failed:[/bold red] {exc}")
+        raise typer.Exit(1) from exc
+
+    print_import_summary(result, target)
+
+
 def build_local_proxy_export(
     *,
     client: str,
@@ -617,6 +699,86 @@ def fetch_export(
     if not isinstance(content, str):
         raise ValueError("Registry API response did not include export content.")
     return content
+
+
+def import_profile_config(
+    *,
+    api_url: str,
+    token: str,
+    tenant: Optional[str],
+    source: str,
+    content: str,
+    profile: str,
+    dry_run: bool,
+    replace: bool,
+) -> dict[str, Any]:
+    """Import rendered client config into a LightNow runtime profile."""
+    url = f"{api_url.rstrip('/')}/integrations/import"
+    try:
+        response = request_with_refresh(
+            "POST",
+            url,
+            params={"dry_run": "true" if dry_run else "false"},
+            json={
+                "source": source,
+                "content": content,
+                "profile": {"name": profile},
+                "replace": replace,
+            },
+            headers={"Accept": "application/json"},
+            token=token,
+            tenant=tenant,
+            timeout=30.0,
+        )
+    except httpx.RequestError as exc:
+        raise ValueError(f"Network error: {exc}") from exc
+
+    if response.status_code == 401:
+        raise authentication_error_from_response(response)
+    if response.status_code >= 400:
+        raise ValueError(f"HTTP {response.status_code}: {redact(response.text)}")
+
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise ValueError("Registry API response did not include an import result.")
+    return payload
+
+
+def print_import_summary(result: dict[str, Any], source_path: Path) -> None:
+    """Print a non-secret import summary."""
+    summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
+    profile = result.get("profile") if isinstance(result.get("profile"), dict) else {}
+    profile_name = (
+        profile.get("name") if isinstance(profile.get("name"), str) else "default"
+    )
+    mode = "Previewed" if result.get("dry_run") is True else "Imported"
+    console.print(
+        f"[green]{mode} {source_path} into LightNow profile {profile_name}[/green]"
+    )
+    console.print(
+        "total={total} mapped={mapped} custom={custom} importable={importable} blocked={blocked}".format(
+            total=summary.get("total", 0),
+            mapped=summary.get("mapped", 0),
+            custom=summary.get("custom", 0),
+            importable=summary.get("importable", 0),
+            blocked=summary.get("blocked", 0),
+        )
+    )
+
+    servers = result.get("servers")
+    if not isinstance(servers, list):
+        return
+    for item in servers:
+        if not isinstance(item, dict):
+            continue
+        alias = item.get("alias") if isinstance(item.get("alias"), str) else "unknown"
+        status = (
+            item.get("status") if isinstance(item.get("status"), str) else "unknown"
+        )
+        server_name = (
+            item.get("server_name") if isinstance(item.get("server_name"), str) else "-"
+        )
+        console.print(f"- {alias}: {status} -> {server_name}")
 
 
 def patch_config(

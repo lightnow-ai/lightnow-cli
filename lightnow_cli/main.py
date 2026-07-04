@@ -25,6 +25,7 @@ app.command("search")(query.search_servers)
 app.command("favorites")(query.favorite_servers)
 app.command("info")(query.server_info)
 app.command("validate")(validate.validate)
+app.command("import-config")(integrations.import_config)
 app.command("sync")(integrations.sync)
 app.command("run")(runner.run)
 

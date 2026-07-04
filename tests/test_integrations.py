@@ -24,6 +24,7 @@ from lightnow_cli.commands.integrations import (
     build_runner_export,
     extract_json_managed,
     fetch_export,
+    import_profile_config,
     patch_config,
     redact,
     render_local_proxy_codex_toml,
@@ -1392,6 +1393,114 @@ def test_fetch_export_uses_profile_and_tenant_headers() -> None:
     assert kwargs["params"]["client"] == "codex"
     assert kwargs["params"]["format"] == "toml"
     assert kwargs["params"]["secret_mode"] == "placeholder"
+
+
+def test_import_profile_config_posts_content_without_printing_it() -> None:
+    """Import requests send client config to the API and keep terminal output separate."""
+
+    class Response:
+        status_code = 200
+        text = "{}"
+
+        def json(self) -> dict[str, object]:
+            return {
+                "dry_run": True,
+                "profile": {"name": "codex-current"},
+                "summary": {
+                    "total": 1,
+                    "mapped": 1,
+                    "custom": 0,
+                    "importable": 1,
+                    "blocked": 0,
+                },
+                "servers": [
+                    {
+                        "alias": "github",
+                        "status": "mapped",
+                        "server_name": "io.github.github/github-mcp-server",
+                    }
+                ],
+            }
+
+    with patch("lightnow_cli.authenticated_http.httpx.request") as mock_post:
+        mock_post.return_value = Response()
+
+        payload = import_profile_config(
+            api_url="https://registry-api.lightnow.local/v0.1",
+            token="token",
+            tenant="tenant-uuid",
+            source="codex",
+            content='[mcp_servers.github]\ncommand = "docker"\n',
+            profile="codex-current",
+            dry_run=True,
+            replace=False,
+        )
+
+    assert payload["summary"]["mapped"] == 1
+    _, kwargs = mock_post.call_args
+    assert kwargs["headers"]["Authorization"] == "Bearer token"
+    assert kwargs["headers"]["X-Tenant"] == "tenant-uuid"
+    assert kwargs["params"]["dry_run"] == "true"
+    assert kwargs["json"]["source"] == "codex"
+    assert kwargs["json"]["profile"]["name"] == "codex-current"
+    assert kwargs["json"]["content"] == '[mcp_servers.github]\ncommand = "docker"\n'
+    assert kwargs["json"]["replace"] is False
+
+
+def test_import_config_command_prints_only_redacted_summary() -> None:
+    """The CLI import command must not echo source config or secret values."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "config.toml"
+        target.write_text(
+            '[mcp_servers.github]\ncommand = "docker"\n\n'
+            '[mcp_servers.github.env]\nGITHUB_TOKEN = "secret-value"\n'
+        )
+        with (
+            patch(
+                "lightnow_cli.commands.integrations.require_access_token",
+                return_value="token",
+            ),
+            patch(
+                "lightnow_cli.commands.integrations.import_profile_config",
+                return_value={
+                    "dry_run": True,
+                    "profile": {"name": "default"},
+                    "summary": {
+                        "total": 1,
+                        "mapped": 1,
+                        "custom": 0,
+                        "importable": 1,
+                        "blocked": 0,
+                    },
+                    "servers": [
+                        {
+                            "alias": "github",
+                            "status": "mapped",
+                            "server_name": "io.github.github/github-mcp-server",
+                        }
+                    ],
+                },
+            ) as importer,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "import-config",
+                    "--client",
+                    "codex",
+                    "--config-path",
+                    str(target),
+                    "--dry-run",
+                ],
+            )
+
+    assert result.exit_code == 0
+    assert "Previewed" in result.stdout
+    assert "github: mapped" in result.stdout
+    assert "secret-value" not in result.stdout
+    assert "GITHUB_TOKEN" not in result.stdout
+    importer.assert_called_once()
 
 
 def test_fetch_export_refreshes_and_retries_after_unauthorized() -> None:

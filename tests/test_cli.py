@@ -66,6 +66,7 @@ def test_cli_help(runner):
     assert "favorites" in result.stdout
     assert "info" in result.stdout
     assert "validate" in result.stdout
+    assert "import-config" in result.stdout
     assert "sync" in result.stdout
     assert "status" in result.stdout
     assert "logout" in result.stdout
@@ -99,6 +100,7 @@ def test_login_help_is_customer_friendly(runner):
         "favorites",
         "info",
         "validate",
+        "import-config",
         "sync",
         "run",
     ],
