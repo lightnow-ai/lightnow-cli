@@ -367,12 +367,40 @@ def test_runner_export_for_codex_uses_lightnow_run_without_secret_values() -> No
     assert "top-secret" not in generated
 
 
-def test_local_proxy_export_for_codex_writes_one_http_server() -> None:
-    """Local Proxy Mode writes one Codex MCP entry with proven approval defaults."""
+def test_local_proxy_export_for_codex_writes_one_stdio_server() -> None:
+    """Local Proxy Mode writes one Codex entry that auto-starts the proxy."""
     generated = build_local_proxy_export(
         client="codex",
         export_format="toml",
         local_proxy_url="http://127.0.0.1:8080/mcp",
+        local_proxy_config_path=Path("/tmp/lightnow/mcp-proxy.yaml"),
+    )
+    payload = tomllib.loads(generated)
+
+    assert payload == {
+        "mcp_servers": {
+            "lightnow": {
+                "command": "mcp-proxy",
+                "args": [
+                    "--config",
+                    "/tmp/lightnow/mcp-proxy.yaml",
+                    "--transport",
+                    "stdio",
+                ],
+                "default_tools_approval_mode": "approve",
+            }
+        }
+    }
+    assert "url" not in generated
+
+
+def test_local_proxy_export_for_codex_can_write_http_server() -> None:
+    """HTTP Local Proxy Mode remains available for daemon-style clients."""
+    generated = build_local_proxy_export(
+        client="codex",
+        export_format="toml",
+        local_proxy_url="http://127.0.0.1:8080/mcp",
+        local_proxy_transport="http",
     )
     payload = tomllib.loads(generated)
 
@@ -385,7 +413,6 @@ def test_local_proxy_export_for_codex_writes_one_http_server() -> None:
         }
     }
     assert "command" not in generated
-    assert "args" not in generated
 
 
 def test_local_proxy_export_rejects_non_local_urls() -> None:
@@ -402,6 +429,7 @@ def test_local_proxy_export_rejects_non_local_urls() -> None:
                 client="codex",
                 export_format="toml",
                 local_proxy_url=url,
+                local_proxy_transport="http",
             )
         except ValueError as exc:
             assert "localhost" in str(exc)
@@ -684,6 +712,9 @@ def test_sync_local_proxy_dry_run_writes_one_codex_entry_without_fetching_export
 
     assert result.exit_code == 0
     assert "[mcp_servers.lightnow]" in result.stdout
+    assert 'command = "mcp-proxy"' in result.stdout
+    assert "--transport" in result.stdout
+    assert "stdio" in result.stdout
     assert 'default_tools_approval_mode = "approve"' in result.stdout
     assert "--server" not in result.stdout
     assert not target.exists()
@@ -743,7 +774,10 @@ def test_sync_local_proxy_patches_existing_codex_config() -> None:
     assert result.exit_code == 0
     assert 'model = "gpt-5.5"' in patched
     assert "[mcp_servers.lightnow]" in patched
-    assert 'url = "http://localhost:8765/mcp"' in patched
+    assert 'command = "mcp-proxy"' in patched
+    assert str(proxy_config) in patched
+    assert '"--transport", "stdio"' in patched
+    assert 'url = "http://localhost:8765/mcp"' not in patched
     assert 'default_tools_approval_mode = "approve"' in patched
     assert proxy_payload["server"] == {
         "host": "localhost",
