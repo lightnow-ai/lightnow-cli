@@ -19,6 +19,7 @@ from lightnow_cli.commands.integrations import (
     BEGIN,
     END,
     JSON_MANIFEST_SUFFIX,
+    build_local_proxy_config,
     build_local_proxy_export,
     build_runner_export,
     extract_json_managed,
@@ -715,6 +716,7 @@ def test_sync_local_proxy_patches_existing_codex_config() -> None:
     runner = CliRunner()
     with tempfile.TemporaryDirectory() as tmp:
         target = Path(tmp) / "config.toml"
+        proxy_config = Path(tmp) / "mcp-proxy.yaml"
         target.write_text('model = "gpt-5.5"\n')
         with patch(
             "lightnow_cli.commands.integrations.require_access_token",
@@ -729,17 +731,54 @@ def test_sync_local_proxy_patches_existing_codex_config() -> None:
                     "--local-proxy",
                     "--local-proxy-url",
                     "http://localhost:8765/mcp",
+                    "--local-proxy-config-path",
+                    str(proxy_config),
                     "--config-path",
                     str(target),
                 ],
             )
             patched = target.read_text()
+            proxy_payload = yaml.safe_load(proxy_config.read_text())
 
     assert result.exit_code == 0
     assert 'model = "gpt-5.5"' in patched
     assert "[mcp_servers.lightnow]" in patched
     assert 'url = "http://localhost:8765/mcp"' in patched
     assert 'default_tools_approval_mode = "approve"' in patched
+    assert proxy_payload["server"] == {
+        "host": "localhost",
+        "port": 8765,
+        "public_url": "http://localhost:8765",
+    }
+    assert proxy_payload["local_proxy"] == {
+        "enabled": True,
+        "profile": "default",
+        "path": "/mcp",
+        "sync_from_lightnow": True,
+    }
+    assert proxy_payload["registry_api"]["use_cli_session"] is True
+    assert proxy_payload["registry_api"]["include_secrets"] is True
+    assert proxy_payload["profiles"] == {"default": {}}
+    assert proxy_payload["upstreams"] == {}
+
+
+def test_build_local_proxy_config_can_pin_tenant_context() -> None:
+    """Local Proxy config can carry the effective tenant selected during sync."""
+    generated = build_local_proxy_config(
+        local_proxy_url="http://127.0.0.1:8080/mcp",
+        profile="engineering",
+        registry_api_url="https://registry-api.lightnow.local/v0.1",
+        tenant="tenant-uuid",
+    )
+
+    payload = yaml.safe_load(generated)
+
+    assert payload["local_proxy"]["profile"] == "engineering"
+    assert (
+        payload["registry_api"]["base_url"]
+        == "https://registry-api.lightnow.local/v0.1"
+    )
+    assert payload["registry_api"]["cli_tenant_id"] == "tenant-uuid"
 
 
 def test_sync_runner_passes_tenant_to_profile_server_lookup() -> None:

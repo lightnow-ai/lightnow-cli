@@ -7,11 +7,12 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, cast
 from urllib.parse import urlparse
 
 import httpx
 import typer
+import yaml
 from rich.console import Console
 from typing_extensions import Annotated
 
@@ -57,6 +58,7 @@ CLIENT_DEFAULTS: dict[str, tuple[str, Path]] = {
 
 CLIENTS = sorted(CLIENT_DEFAULTS)
 SECRET_MODES = ["placeholder", "plaintext"]
+DEFAULT_LOCAL_PROXY_CONFIG_PATH = Path.home() / ".lightnow" / "mcp-proxy.yaml"
 
 
 @app.command("sync")
@@ -117,6 +119,13 @@ def sync(
             help="Local Proxy MCP endpoint used with --local-proxy.",
         ),
     ] = "http://127.0.0.1:8080/mcp",
+    local_proxy_config_path: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--local-proxy-config-path",
+            help="Config file written for the LightNow Local Proxy.",
+        ),
+    ] = None,
 ) -> None:
     """Sync a LightNow integration runtime profile into a local MCP client config."""
     if client not in CLIENT_DEFAULTS:
@@ -154,6 +163,12 @@ def sync(
                 client=client,
                 export_format=export_format,
                 local_proxy_url=local_proxy_url,
+            )
+            proxy_config = build_local_proxy_config(
+                local_proxy_url=local_proxy_url,
+                profile=profile,
+                registry_api_url=registry_api_url,
+                tenant=effective_tenant,
             )
         elif runner:
             profile_payload = fetch_profile_servers(
@@ -219,6 +234,13 @@ def sync(
             console.print("[yellow]Canceled.[/yellow]")
             raise typer.Exit(1)
 
+    if local_proxy:
+        proxy_target = (
+            local_proxy_config_path or DEFAULT_LOCAL_PROXY_CONFIG_PATH
+        ).expanduser()
+        secure_write_text(proxy_target, proxy_config)
+        console.print(f"[green]Wrote Local Proxy config to {proxy_target}[/green]")
+
     secure_write_text(target, patched, executable=export_format == "shell")
     if export_format == "json":
         write_json_manifest(manifest, extract_json_managed(generated))
@@ -257,6 +279,59 @@ def render_local_proxy_codex_toml(local_proxy_url: str) -> str:
         f"url = {json.dumps(local_proxy_url)}\n"
         'default_tools_approval_mode = "approve"\n'
     )
+
+
+def build_local_proxy_config(
+    *,
+    local_proxy_url: str,
+    profile: str,
+    registry_api_url: str,
+    tenant: Optional[str],
+) -> str:
+    """Render the local mcp-proxy config for LightNow-managed profile sync."""
+    parsed = urlparse(local_proxy_url)
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("Local Proxy URL must point to localhost.") from exc
+    if parsed.scheme != "http" or parsed.hostname is None or port is None:
+        raise ValueError("Local Proxy URL must point to localhost.")
+
+    registry_api: dict[str, Any] = {
+        "enabled": True,
+        "base_url": registry_api_url,
+        "include_secrets": True,
+        "default_scope_type": "system",
+        "timeout_seconds": 20,
+        "use_cli_session": True,
+        "cli_config_path": str(config_manager.config_file),
+    }
+    if tenant:
+        registry_api["cli_tenant_id"] = tenant
+
+    payload = {
+        "server": {
+            "host": parsed.hostname,
+            "port": port,
+            "public_url": f"{parsed.scheme}://{parsed.hostname}:{port}",
+        },
+        "local_proxy": {
+            "enabled": True,
+            "profile": profile,
+            "path": parsed.path or "/mcp",
+            "sync_from_lightnow": True,
+        },
+        "auth": {
+            "enabled": False,
+            "issuer": config_manager.load_config().issuer,
+            "groups_claim": "groups",
+            "jwks_cache_seconds": 300,
+        },
+        "registry_api": registry_api,
+        "profiles": {profile: {}},
+        "upstreams": {},
+    }
+    return cast(str, yaml.safe_dump(payload, sort_keys=False))
 
 
 def build_runner_export(

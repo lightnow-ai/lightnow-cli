@@ -88,10 +88,12 @@ local LightNow proxy instead of writing one entry per MCP server:
 lightnow sync --client codex --local-proxy
 ```
 
-This currently writes a localhost Streamable HTTP MCP entry for Codex. The
-Local Proxy keeps server config and secrets outside the normal client config.
-The older `--runner` flag remains a compatibility path that writes one
-`lightnow run` wrapper per profile server.
+This writes a localhost Streamable HTTP MCP entry for Codex and a
+`~/.lightnow/mcp-proxy.yaml` config for the Local Proxy. The Local Proxy then
+uses the existing LightNow CLI login session to fetch the selected runtime
+profile and resolve server config plus secrets at runtime. The older `--runner`
+flag remains a compatibility path that writes one `lightnow run` wrapper per
+profile server.
 
 ## Run One Server
 
