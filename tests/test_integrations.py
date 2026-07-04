@@ -26,6 +26,7 @@ from lightnow_cli.commands.integrations import (
     fetch_export,
     import_profile_config,
     patch_config,
+    print_import_summary,
     redact,
     render_local_proxy_codex_toml,
     render_runner_config,
@@ -1691,3 +1692,20 @@ def test_json_manifest_validation() -> None:
             assert "invalid aliases" in str(exc)
         else:
             raise AssertionError("expected ValueError")
+
+
+def test_print_import_summary_handles_missing_server_list(capsys) -> None:
+    """Import summary handles sparse API responses without leaking payload data."""
+    print_import_summary(
+        {
+            "dry_run": False,
+            "summary": {"total": 1, "mapped": 0, "blocked": 0},
+            "profile": {},
+            "servers": [None],
+        },
+        Path("codex.toml"),
+    )
+
+    output = capsys.readouterr().out
+    assert "Imported codex.toml into LightNow profile default" in output
+    assert "total=1" in output

@@ -746,8 +746,10 @@ def import_profile_config(
 
 def print_import_summary(result: dict[str, Any], source_path: Path) -> None:
     """Print a non-secret import summary."""
-    summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
-    profile = result.get("profile") if isinstance(result.get("profile"), dict) else {}
+    raw_summary = result.get("summary")
+    summary = cast(dict[str, Any], raw_summary) if isinstance(raw_summary, dict) else {}
+    raw_profile = result.get("profile")
+    profile = cast(dict[str, Any], raw_profile) if isinstance(raw_profile, dict) else {}
     profile_name = (
         profile.get("name") if isinstance(profile.get("name"), str) else "default"
     )
