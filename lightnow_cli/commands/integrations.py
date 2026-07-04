@@ -134,6 +134,13 @@ def sync(
             help="Config file written for the LightNow Local Proxy.",
         ),
     ] = None,
+    registry_ca_file: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--registry-ca-file",
+            help="CA bundle used by the Local Proxy for LightNow Registry/Auth TLS.",
+        ),
+    ] = None,
 ) -> None:
     """Sync a LightNow integration runtime profile into a local MCP client config."""
     if client not in CLIENT_DEFAULTS:
@@ -184,6 +191,7 @@ def sync(
                 profile=profile,
                 registry_api_url=registry_api_url,
                 tenant=effective_tenant,
+                registry_ca_file=registry_ca_file,
             )
         elif runner:
             profile_payload = fetch_profile_servers(
@@ -411,6 +419,7 @@ def build_local_proxy_config(
     profile: str,
     registry_api_url: str,
     tenant: Optional[str],
+    registry_ca_file: Optional[Path] = None,
 ) -> str:
     """Render the local mcp-proxy config for LightNow-managed profile sync."""
     parsed = urlparse(local_proxy_url)
@@ -432,6 +441,8 @@ def build_local_proxy_config(
     }
     if tenant:
         registry_api["cli_tenant_id"] = tenant
+    if registry_ca_file is not None:
+        registry_api["ca_file"] = str(registry_ca_file.expanduser())
 
     payload = {
         "server": {

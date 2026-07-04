@@ -852,6 +852,21 @@ def test_build_local_proxy_config_can_pin_tenant_context() -> None:
     assert payload["registry_api"]["cli_tenant_id"] == "tenant-uuid"
 
 
+def test_build_local_proxy_config_can_include_registry_ca_file() -> None:
+    """Local Proxy config can scope a custom CA to LightNow Registry/Auth."""
+    generated = build_local_proxy_config(
+        local_proxy_url="http://127.0.0.1:8080/mcp",
+        profile="default",
+        registry_api_url="https://registry-api.lightnow.local/v0.1",
+        tenant=None,
+        registry_ca_file=Path("/tmp/lightnow-local-ca.crt"),
+    )
+
+    payload = yaml.safe_load(generated)
+
+    assert payload["registry_api"]["ca_file"] == "/tmp/lightnow-local-ca.crt"
+
+
 def test_sync_runner_passes_tenant_to_profile_server_lookup() -> None:
     """Runner sync builds organization-aware client commands from tenant profiles."""
     runner = CliRunner()
