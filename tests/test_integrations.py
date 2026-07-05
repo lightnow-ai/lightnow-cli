@@ -39,6 +39,7 @@ from lightnow_cli.commands.integrations import (
     render_local_proxy_codex_toml,
     render_runner_config,
     secure_write_text,
+    warm_local_proxy_tools_cache,
 )
 from lightnow_cli.commands.runner import (
     assert_runtime_context_ready,
@@ -677,7 +678,7 @@ def test_local_proxy_export_rejects_unsupported_clients() -> None:
         )
     except ValueError as exc:
         assert (
-            "Codex TOML, Antigravity JSON, Claude Desktop JSON, Cursor JSON, "
+            "Codex TOML, Antigravity JSON, Claude Code JSON, Claude Desktop JSON, Cursor JSON, "
             "Gemini CLI JSON, and VS Code JSON" in str(exc)
         )
     else:
@@ -1148,6 +1149,103 @@ def test_sync_local_proxy_replaces_existing_claude_desktop_mcp_servers() -> None
     assert "secret" not in patched_text
     assert proxy_payload["local_proxy"]["client_name"] == "claude-desktop"
     assert proxy_payload["local_proxy"]["client_transport"] == "stdio"
+
+
+def test_sync_local_proxy_replaces_existing_claude_code_mcp_servers() -> None:
+    """Claude Code Local Proxy sync patches the user-scope Claude config."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / ".claude.json"
+        proxy_config = Path(tmp) / "claude-code.yaml"
+        target.write_text(
+            json.dumps(
+                {
+                    "numStartups": 3,
+                    "projects": {
+                        "/repo": {
+                            "mcpServers": {},
+                            "enabledMcpjsonServers": [],
+                        }
+                    },
+                    "mcpServers": {
+                        "github": {
+                            "type": "stdio",
+                            "command": "docker",
+                            "env": {"GITHUB_TOKEN": "secret"},
+                        }
+                    },
+                }
+            )
+        )
+        with (
+            patch(
+                "lightnow_cli.commands.integrations.require_access_token",
+                return_value="token",
+            ),
+            patch(
+                "lightnow_cli.commands.integrations.warm_local_proxy_tools_cache"
+            ) as warm_cache,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "sync",
+                    "--client",
+                    "claude-code",
+                    "--local-proxy",
+                    "--local-proxy-config-path",
+                    str(proxy_config),
+                    "--config-path",
+                    str(target),
+                ],
+            )
+            patched = json.loads(target.read_text())
+            patched_text = target.read_text()
+            proxy_payload = yaml.safe_load(proxy_config.read_text())
+
+    assert result.exit_code == 0
+    assert patched["numStartups"] == 3
+    assert patched["projects"] == {
+        "/repo": {"mcpServers": {}, "enabledMcpjsonServers": []}
+    }
+    assert list(patched["mcpServers"]) == ["LightNow"]
+    assert patched["mcpServers"]["LightNow"]["command"].endswith("mcp-proxy")
+    assert patched["mcpServers"]["LightNow"]["args"] == [
+        "--config",
+        str(proxy_config),
+        "--transport",
+        "stdio",
+    ]
+    assert "secret" not in patched_text
+    assert proxy_payload["local_proxy"]["client_name"] == "claude-code"
+    assert proxy_payload["local_proxy"]["client_transport"] == "stdio"
+    warm_cache.assert_called_once_with(proxy_config)
+
+
+def test_warm_local_proxy_tools_cache_runs_proxy_warm_command() -> None:
+    """Claude Code sync can prewarm tool metadata for short MCP health checks."""
+    with (
+        patch(
+            "lightnow_cli.commands.integrations.local_proxy_command",
+            return_value="/usr/bin/mcp-proxy",
+        ),
+        patch("lightnow_cli.commands.integrations.subprocess.run") as run,
+    ):
+        run.return_value.returncode = 0
+        run.return_value.stdout = "Warmed tools cache for profile default: 2 tools\n"
+        run.return_value.stderr = ""
+
+        warm_local_proxy_tools_cache(Path("/tmp/lightnow/claude-code.yaml"))
+
+    run.assert_called_once()
+    assert run.call_args.args[0] == [
+        "/usr/bin/mcp-proxy",
+        "--config",
+        "/tmp/lightnow/claude-code.yaml",
+        "--transport",
+        "stdio",
+        "--warm-tools-cache",
+    ]
 
 
 def test_sync_local_proxy_replaces_existing_antigravity_mcp_servers() -> None:

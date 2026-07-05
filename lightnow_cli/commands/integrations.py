@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import tomllib
@@ -69,7 +70,7 @@ CLIENT_DEFAULTS: dict[str, tuple[str, Path]] = {
         / "Claude"
         / "claude_desktop_config.json",
     ),
-    "claude-code": ("json", Path.home() / ".claude" / "mcp.json"),
+    "claude-code": ("json", Path.home() / ".claude.json"),
     "cursor": ("json", Path.home() / ".cursor" / "mcp.json"),
     "windsurf": ("json", Path.home() / ".codeium" / "windsurf" / "mcp_config.json"),
     "continue": ("yaml", Path.home() / ".continue" / "config.yaml"),
@@ -83,6 +84,7 @@ CLIENTS = sorted(CLIENT_DEFAULTS)
 SECRET_MODES = ["placeholder", "plaintext"]
 LOCAL_PROXY_MCP_SERVERS_JSON_CLIENTS = {
     "antigravity",
+    "claude-code",
     "claude-desktop",
     "cursor",
     "gemini-cli",
@@ -374,6 +376,8 @@ def sync(
     if local_proxy:
         secure_write_text(proxy_target, proxy_config)
         console.print(f"[green]Wrote Local Proxy config to {proxy_target}[/green]")
+        if client == "claude-code":
+            warm_local_proxy_tools_cache(proxy_target)
 
     secure_write_text(target, patched, executable=export_format == "shell")
     if export_format == "json":
@@ -547,8 +551,8 @@ def build_local_proxy_export(
         if client != "codex" or export_format != "toml":
             raise ValueError(
                 "Local Proxy Mode stdio currently supports Codex TOML, "
-                "Antigravity JSON, Claude Desktop JSON, Cursor JSON, "
-                "Gemini CLI JSON, and VS Code JSON only."
+                "Antigravity JSON, Claude Code JSON, Claude Desktop JSON, "
+                "Cursor JSON, Gemini CLI JSON, and VS Code JSON only."
             )
         return render_local_proxy_codex_stdio_toml(
             local_proxy_config_path or default_local_proxy_config_path(client)
@@ -575,6 +579,41 @@ def local_proxy_command() -> str:
     """Return the command path most likely to work from desktop MCP clients."""
     resolved = shutil.which("mcp-proxy")
     return resolved or "mcp-proxy"
+
+
+def warm_local_proxy_tools_cache(local_proxy_config_path: Path) -> None:
+    """Warm proxy tool metadata for clients with short MCP health-check timeouts."""
+    command = local_proxy_command()
+    try:
+        result = subprocess.run(
+            [
+                command,
+                "--config",
+                str(local_proxy_config_path.expanduser()),
+                "--transport",
+                "stdio",
+                "--warm-tools-cache",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except Exception as exc:
+        console.print(f"[yellow]Could not warm Local Proxy tools cache:[/yellow] {exc}")
+        return
+
+    if result.returncode != 0:
+        details = (result.stderr or result.stdout).strip().splitlines()
+        reason = details[-1] if details else f"exit code {result.returncode}"
+        console.print(
+            f"[yellow]Could not warm Local Proxy tools cache:[/yellow] {reason}"
+        )
+        return
+
+    summary = result.stdout.strip().splitlines()
+    if summary:
+        console.print(f"[green]{summary[-1]}[/green]")
 
 
 def render_local_proxy_codex_stdio_toml(local_proxy_config_path: Path) -> str:
