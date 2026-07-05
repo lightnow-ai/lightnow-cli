@@ -440,6 +440,26 @@ def test_local_proxy_export_for_claude_desktop_writes_one_stdio_server() -> None
     ]
 
 
+def test_local_proxy_export_for_antigravity_writes_one_stdio_server() -> None:
+    """Local Proxy Mode writes one Antigravity entry that auto-starts the proxy."""
+    generated = build_local_proxy_export(
+        client="antigravity",
+        export_format="json",
+        local_proxy_url="http://127.0.0.1:8080/mcp",
+        local_proxy_config_path=Path("/tmp/lightnow/antigravity.yaml"),
+    )
+    payload = json.loads(generated)
+
+    assert list(payload["mcpServers"]) == ["LightNow"]
+    assert payload["mcpServers"]["LightNow"]["command"].endswith("mcp-proxy")
+    assert payload["mcpServers"]["LightNow"]["args"] == [
+        "--config",
+        "/tmp/lightnow/antigravity.yaml",
+        "--transport",
+        "stdio",
+    ]
+
+
 def test_local_proxy_export_for_gemini_cli_writes_one_stdio_server() -> None:
     """Local Proxy Mode writes one Gemini CLI entry that auto-starts the proxy."""
     generated = build_local_proxy_export(
@@ -462,6 +482,7 @@ def test_local_proxy_export_for_gemini_cli_writes_one_stdio_server() -> None:
 
 def test_default_local_proxy_config_path_is_client_specific() -> None:
     """Local Proxy configs are isolated per MCP client."""
+    assert default_local_proxy_config_path("antigravity").name == "antigravity.yaml"
     assert (
         default_local_proxy_config_path("claude-desktop").name == "claude-desktop.yaml"
     )
@@ -502,7 +523,10 @@ def test_local_proxy_export_rejects_unsupported_clients() -> None:
             local_proxy_url="http://127.0.0.1:8080/mcp",
         )
     except ValueError as exc:
-        assert "Codex TOML, Claude Desktop JSON, and Gemini CLI JSON" in str(exc)
+        assert (
+            "Codex TOML, Antigravity JSON, Claude Desktop JSON, and Gemini CLI JSON"
+            in str(exc)
+        )
     else:
         raise AssertionError("expected ValueError")
 
@@ -599,7 +623,13 @@ def test_runner_export_renders_supported_client_formats() -> None:
         ],
     }
 
-    for client in ["claude-desktop", "claude-code", "cursor", "windsurf"]:
+    for client in [
+        "antigravity",
+        "claude-desktop",
+        "claude-code",
+        "cursor",
+        "windsurf",
+    ]:
         payload = json.loads(
             render_runner_config(servers, client, "json", "default", None)
         )
@@ -964,6 +994,65 @@ def test_sync_local_proxy_replaces_existing_claude_desktop_mcp_servers() -> None
     ]
     assert "secret" not in patched_text
     assert proxy_payload["local_proxy"]["client_name"] == "claude-desktop"
+    assert proxy_payload["local_proxy"]["client_transport"] == "stdio"
+
+
+def test_sync_local_proxy_replaces_existing_antigravity_mcp_servers() -> None:
+    """Antigravity Local Proxy sync leaves one LightNow MCP server entry."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "mcp_config.json"
+        proxy_config = Path(tmp) / "antigravity.yaml"
+        target.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "google-developer-knowledge": {
+                            "serverUrl": "https://developerknowledge.googleapis.com/mcp",
+                            "headers": {"X-Goog-Api-Key": "secret"},
+                        }
+                    },
+                    "preferences": {"approvalMode": "prompt"},
+                }
+            )
+        )
+        with (
+            patch(
+                "lightnow_cli.commands.integrations.require_access_token",
+                return_value="token",
+            ),
+            patch(
+                "lightnow_cli.commands.integrations.default_local_proxy_config_path",
+                return_value=proxy_config,
+            ),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "sync",
+                    "--client",
+                    "antigravity",
+                    "--local-proxy",
+                    "--config-path",
+                    str(target),
+                ],
+            )
+            patched = json.loads(target.read_text())
+            patched_text = target.read_text()
+            proxy_payload = yaml.safe_load(proxy_config.read_text())
+
+    assert result.exit_code == 0
+    assert patched["preferences"] == {"approvalMode": "prompt"}
+    assert list(patched["mcpServers"]) == ["LightNow"]
+    assert patched["mcpServers"]["LightNow"]["command"].endswith("mcp-proxy")
+    assert patched["mcpServers"]["LightNow"]["args"] == [
+        "--config",
+        str(proxy_config),
+        "--transport",
+        "stdio",
+    ]
+    assert "secret" not in patched_text
+    assert proxy_payload["local_proxy"]["client_name"] == "antigravity"
     assert proxy_payload["local_proxy"]["client_transport"] == "stdio"
 
 

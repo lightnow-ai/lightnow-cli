@@ -88,13 +88,25 @@ local LightNow proxy instead of writing one entry per MCP server:
 lightnow sync --client codex --local-proxy
 ```
 
-This writes a Codex entry that starts `mcp-proxy` over stdio plus a
-`~/.lightnow/mcp-proxy.yaml` config for the Local Proxy. The Local Proxy then
+The same Local Proxy mode is available for local clients with JSON MCP config
+files, including Claude Desktop and Google Antigravity:
+
+```bash
+lightnow sync --client claude-desktop --local-proxy
+lightnow sync --client antigravity --local-proxy
+```
+
+This writes one client entry that starts `mcp-proxy` over stdio plus a
+per-client config under `~/.lightnow/mcp-proxy/`. The Local Proxy then
 uses the existing LightNow CLI login session to fetch the selected runtime
 profile and resolve server config plus secrets at runtime. For daemon-style
 testing, pass `--local-proxy-transport http` to write a localhost Streamable
 HTTP entry instead. The older `--runner` flag remains a compatibility path that
 writes one `lightnow run` wrapper per profile server.
+
+Note: Google has moved individual Gemini CLI users to Antigravity. LightNow
+keeps `gemini-cli` support for Enterprise/API-key environments, but
+`antigravity` is the recommended Google local client target for individuals.
 
 ## Run One Server
 

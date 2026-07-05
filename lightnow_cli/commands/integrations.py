@@ -38,6 +38,7 @@ END = "# <<< LightNow managed integrations <<<"
 JSON_MANIFEST_SUFFIX = ".lightnow-managed.json"
 
 CLIENT_DEFAULTS: dict[str, tuple[str, Path]] = {
+    "antigravity": ("json", Path.home() / ".gemini" / "config" / "mcp_config.json"),
     "codex": ("toml", Path.home() / ".codex" / "config.toml"),
     "claude-desktop": (
         "json",
@@ -59,6 +60,7 @@ CLIENT_DEFAULTS: dict[str, tuple[str, Path]] = {
 
 CLIENTS = sorted(CLIENT_DEFAULTS)
 SECRET_MODES = ["placeholder", "plaintext"]
+LOCAL_PROXY_JSON_CLIENTS = {"antigravity", "claude-desktop", "gemini-cli"}
 DEFAULT_LOCAL_PROXY_CONFIG_DIR = Path.home() / ".lightnow" / "mcp-proxy"
 
 
@@ -235,7 +237,7 @@ def sync(
             existing = prepare_codex_local_proxy_config(existing)
         if (
             local_proxy
-            and client in {"claude-desktop", "gemini-cli"}
+            and client in LOCAL_PROXY_JSON_CLIENTS
             and export_format == "json"
         ):
             existing = prepare_json_local_proxy_config(existing)
@@ -375,13 +377,14 @@ def build_local_proxy_export(
 ) -> str:
     """Build one client config entry that points at the LightNow Local Proxy."""
     if local_proxy_transport == "stdio":
-        if client in {"claude-desktop", "gemini-cli"} and export_format == "json":
+        if client in LOCAL_PROXY_JSON_CLIENTS and export_format == "json":
             return render_local_proxy_mcp_servers_json(
                 local_proxy_config_path or default_local_proxy_config_path(client)
             )
         if client != "codex" or export_format != "toml":
             raise ValueError(
-                "Local Proxy Mode stdio currently supports Codex TOML, Claude Desktop JSON, and Gemini CLI JSON only."
+                "Local Proxy Mode stdio currently supports Codex TOML, "
+                "Antigravity JSON, Claude Desktop JSON, and Gemini CLI JSON only."
             )
         return render_local_proxy_codex_stdio_toml(
             local_proxy_config_path or default_local_proxy_config_path(client)
@@ -566,6 +569,7 @@ def render_runner_config(
         return render_runner_toml(servers, profile, tenant)
 
     if export_format == "json" and client in {
+        "antigravity",
         "claude-desktop",
         "claude-code",
         "cursor",
