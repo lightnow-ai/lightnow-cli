@@ -124,6 +124,13 @@ def sync(
             help="Write one LightNow Local Proxy entry instead of per-server config.",
         ),
     ] = False,
+    from_settings: Annotated[
+        bool,
+        typer.Option(
+            "--from-settings",
+            help="Use LightNow Config policy to choose direct config or Local Proxy mode.",
+        ),
+    ] = False,
     local_proxy_url: Annotated[
         str,
         typer.Option(
@@ -162,6 +169,11 @@ def sync(
         raise_bad_argument(
             "Unsupported sync mode", "Use either --runner or --local-proxy, not both."
         )
+    if from_settings and (runner or local_proxy):
+        raise_bad_argument(
+            "Unsupported sync mode",
+            "Use --from-settings without --runner or --local-proxy.",
+        )
     if local_proxy_transport not in {"stdio", "http"}:
         raise_bad_argument("Unsupported Local Proxy transport", "Use stdio or http.")
 
@@ -187,8 +199,33 @@ def sync(
     proxy_target = (
         local_proxy_config_path or default_local_proxy_config_path(client)
     ).expanduser()
+    settings_local_proxy_summary: dict[str, Any] = {}
 
     try:
+        if from_settings:
+            settings_payload = fetch_integration_settings(
+                api_url=registry_api_url,
+                token=bearer_token,
+                tenant=effective_tenant,
+            )
+            local_proxy_settings = settings_payload.get("localProxy")
+            if not isinstance(local_proxy_settings, dict):
+                local_proxy_settings = {}
+            settings_local_proxy_summary = local_proxy_settings
+            managed_clients = local_proxy_settings.get("managedClients")
+            client_is_managed = (
+                not isinstance(managed_clients, list)
+                or len(managed_clients) == 0
+                or client in managed_clients
+            )
+            if local_proxy_settings.get("enabled") is True and client_is_managed:
+                local_proxy = True
+                configured_profile = local_proxy_settings.get("profile")
+                if isinstance(configured_profile, str) and configured_profile:
+                    profile = configured_profile
+            elif isinstance(settings_payload.get("defaultProfile"), str):
+                profile = str(settings_payload["defaultProfile"])
+
         if local_proxy:
             generated = build_local_proxy_export(
                 client=client,
@@ -295,6 +332,11 @@ def sync(
             expected_proxy_config_path=proxy_target,
         )
         print_config_status(status, target)
+        if from_settings:
+            if settings_local_proxy_summary.get("policyMode") == "enforce":
+                console.print(
+                    "[cyan]LightNow policy is enforce: managed clients should keep only the Local Proxy MCP entry.[/cyan]"
+                )
 
 
 def config_status(
@@ -830,6 +872,41 @@ def fetch_export(
     if not isinstance(content, str):
         raise ValueError("Registry API response did not include export content.")
     return content
+
+
+def fetch_integration_settings(
+    *,
+    api_url: str,
+    token: str,
+    tenant: Optional[str],
+) -> dict[str, Any]:
+    """Fetch LightNow integration settings for the current user or tenant."""
+    level = "tenant" if tenant else "user"
+    url = f"{api_url.rstrip('/')}/settings"
+    try:
+        response = request_with_refresh(
+            "GET",
+            url,
+            params={"level": level},
+            headers={"Accept": "application/json"},
+            token=token,
+            tenant=tenant,
+            timeout=30.0,
+        )
+    except httpx.RequestError as exc:
+        raise ValueError(f"Network error: {exc}") from exc
+
+    if response.status_code == 401:
+        raise authentication_error_from_response(response)
+    if response.status_code >= 400:
+        raise ValueError(f"HTTP {response.status_code}: {redact(response.text)}")
+
+    payload = response.json()
+    settings = payload.get("settings") if isinstance(payload, dict) else None
+    integrations = settings.get("integrations") if isinstance(settings, dict) else None
+    if not isinstance(integrations, dict):
+        raise ValueError("Registry API response did not include integration settings.")
+    return integrations
 
 
 def import_profile_config(

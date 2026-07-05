@@ -27,6 +27,7 @@ from lightnow_cli.commands.integrations import (
     default_local_proxy_config_path,
     extract_json_managed,
     fetch_export,
+    fetch_integration_settings,
     import_profile_config,
     patch_config,
     prepare_codex_local_proxy_config,
@@ -1267,6 +1268,103 @@ def test_sync_local_proxy_replaces_existing_gemini_cli_mcp_servers() -> None:
     assert proxy_payload["local_proxy"]["client_transport"] == "stdio"
 
 
+def test_sync_from_settings_uses_local_proxy_policy() -> None:
+    """Settings-driven sync switches managed clients into Local Proxy mode."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "config.toml"
+        proxy_config = Path(tmp) / "codex-proxy.yaml"
+        with (
+            patch(
+                "lightnow_cli.commands.integrations.require_access_token",
+                return_value="token",
+            ),
+            patch(
+                "lightnow_cli.commands.integrations.fetch_integration_settings",
+                return_value={
+                    "defaultProfile": "default",
+                    "localProxy": {
+                        "enabled": True,
+                        "profile": "engineering",
+                        "managedClients": ["codex"],
+                        "allowUnmanagedClientServers": False,
+                        "telemetryEnabled": True,
+                        "policyMode": "enforce",
+                    },
+                },
+            ),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "sync",
+                    "--client",
+                    "codex",
+                    "--from-settings",
+                    "--config-path",
+                    str(target),
+                    "--local-proxy-config-path",
+                    str(proxy_config),
+                ],
+            )
+
+        patched = target.read_text()
+        proxy_payload = yaml.safe_load(proxy_config.read_text())
+
+    assert result.exit_code == 0
+    assert "[mcp_servers.lightnow]" in patched
+    assert proxy_payload["local_proxy"]["profile"] == "engineering"
+    assert proxy_payload["local_proxy"]["client_name"] == "codex"
+    assert "policy is enforce" in result.stdout
+
+
+def test_sync_from_settings_uses_direct_export_for_unmanaged_client() -> None:
+    """Settings-driven sync leaves clients outside managedClients on direct config."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "config.toml"
+        with (
+            patch(
+                "lightnow_cli.commands.integrations.require_access_token",
+                return_value="token",
+            ),
+            patch(
+                "lightnow_cli.commands.integrations.fetch_integration_settings",
+                return_value={
+                    "defaultProfile": "default",
+                    "localProxy": {
+                        "enabled": True,
+                        "profile": "engineering",
+                        "managedClients": ["claude-desktop"],
+                        "policyMode": "observe",
+                    },
+                },
+            ),
+            patch(
+                "lightnow_cli.commands.integrations.fetch_export",
+                return_value='[mcp_servers.github]\ncommand = "docker"\n',
+            ) as export_mock,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "sync",
+                    "--client",
+                    "codex",
+                    "--from-settings",
+                    "--config-path",
+                    str(target),
+                    "--yes",
+                ],
+            )
+            patched = target.read_text()
+
+    assert result.exit_code == 0
+    export_mock.assert_called_once()
+    assert export_mock.call_args.kwargs["profile"] == "default"
+    assert "[mcp_servers.github]" in patched
+
+
 def test_build_local_proxy_config_can_pin_tenant_context() -> None:
     """Local Proxy config can carry the effective tenant selected during sync."""
     generated = build_local_proxy_config(
@@ -1895,6 +1993,31 @@ def test_fetch_export_uses_profile_and_tenant_headers() -> None:
     assert kwargs["params"]["client"] == "codex"
     assert kwargs["params"]["format"] == "toml"
     assert kwargs["params"]["secret_mode"] == "placeholder"
+
+
+def test_fetch_integration_settings_uses_tenant_level_when_tenant_is_set() -> None:
+    """Settings lookup follows the selected CLI organization context."""
+
+    class Response:
+        status_code = 200
+        text = "{}"
+
+        def json(self) -> dict[str, object]:
+            return {"settings": {"integrations": {"defaultProfile": "default"}}}
+
+    with patch("lightnow_cli.authenticated_http.httpx.request") as mock_get:
+        mock_get.return_value = Response()
+
+        payload = fetch_integration_settings(
+            api_url="https://registry-api.lightnow.local/v0.1",
+            token="token",
+            tenant="acme",
+        )
+
+    assert payload == {"defaultProfile": "default"}
+    _, kwargs = mock_get.call_args
+    assert kwargs["params"]["level"] == "tenant"
+    assert kwargs["headers"]["X-Tenant"] == "acme"
 
 
 def test_import_profile_config_posts_content_without_printing_it() -> None:

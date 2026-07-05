@@ -96,6 +96,13 @@ lightnow sync --client claude-desktop --local-proxy
 lightnow sync --client antigravity --local-proxy
 ```
 
+For UI-led rollouts, let the CLI read the desired Config policy from LightNow
+and choose Sync Mode or Local Proxy Mode for the selected client:
+
+```bash
+lightnow sync --client codex --from-settings
+```
+
 This writes one client entry that starts `mcp-proxy` over stdio plus a
 per-client config under `~/.lightnow/mcp-proxy/`. The Local Proxy then
 uses the existing LightNow CLI login session to fetch the selected runtime
