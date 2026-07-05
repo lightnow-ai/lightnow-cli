@@ -1315,6 +1315,9 @@ def test_sync_from_settings_uses_local_proxy_policy() -> None:
     assert "[mcp_servers.lightnow]" in patched
     assert proxy_payload["local_proxy"]["profile"] == "engineering"
     assert proxy_payload["local_proxy"]["client_name"] == "codex"
+    assert proxy_payload["local_proxy"]["policy_mode"] == "enforce"
+    assert proxy_payload["local_proxy"]["allow_unmanaged_client_servers"] is False
+    assert proxy_payload["local_proxy"]["telemetry_enabled"] is True
     assert "policy is enforce" in result.stdout
 
 

@@ -242,6 +242,7 @@ def sync(
                 registry_api_url=registry_api_url,
                 tenant=effective_tenant,
                 registry_ca_file=registry_ca_file,
+                local_proxy_settings=settings_local_proxy_summary if from_settings else None,
             )
         elif runner:
             profile_payload = fetch_profile_servers(
@@ -571,6 +572,7 @@ def build_local_proxy_config(
     registry_api_url: str,
     tenant: Optional[str],
     registry_ca_file: Optional[Path] = None,
+    local_proxy_settings: Optional[dict[str, Any]] = None,
 ) -> str:
     """Render the local mcp-proxy config for LightNow-managed profile sync."""
     parsed = urlparse(local_proxy_url)
@@ -595,25 +597,39 @@ def build_local_proxy_config(
     if registry_ca_file is not None:
         registry_api["ca_file"] = str(registry_ca_file.expanduser())
 
+    local_proxy_config: dict[str, Any] = {
+        "enabled": True,
+        "profile": profile,
+        "path": parsed.path or "/mcp",
+        "sync_from_lightnow": True,
+        "client_name": client,
+        "client_version": None,
+        "runner_name": "lightnow-local-proxy",
+        "runner_version": LOCAL_PROXY_RUNNER_VERSION,
+        "client_transport": "streamable-http"
+        if local_proxy_transport == "http"
+        else "stdio",
+    }
+    if isinstance(local_proxy_settings, dict):
+        local_proxy_config["telemetry_enabled"] = (
+            local_proxy_settings.get("telemetryEnabled") is not False
+        )
+        local_proxy_config["allow_unmanaged_client_servers"] = (
+            local_proxy_settings.get("allowUnmanagedClientServers") is not False
+        )
+        local_proxy_config["policy_mode"] = (
+            "enforce"
+            if local_proxy_settings.get("policyMode") == "enforce"
+            else "observe"
+        )
+
     payload = {
         "server": {
             "host": parsed.hostname,
             "port": port,
             "public_url": f"{parsed.scheme}://{parsed.hostname}:{port}",
         },
-        "local_proxy": {
-            "enabled": True,
-            "profile": profile,
-            "path": parsed.path or "/mcp",
-            "sync_from_lightnow": True,
-            "client_name": client,
-            "client_version": None,
-            "runner_name": "lightnow-local-proxy",
-            "runner_version": LOCAL_PROXY_RUNNER_VERSION,
-            "client_transport": "streamable-http"
-            if local_proxy_transport == "http"
-            else "stdio",
-        },
+        "local_proxy": local_proxy_config,
         "auth": {
             "enabled": False,
             "issuer": config_manager.load_config().issuer,
