@@ -34,6 +34,7 @@ from .auth import (
 from .runner import fetch_profile_servers
 
 console = Console()
+err_console = Console(stderr=True)
 app = typer.Typer(help="Integration profile commands")
 
 BEGIN = "# >>> LightNow managed integrations >>>"
@@ -99,6 +100,18 @@ LIGHTNOW_PROXY_ALIASES = {"lightnow", "LightNow"}
 LOCAL_PROXY_RUNNER_VERSION = "0.1.2"
 VSCODE_VIRTUAL_TOOLS_THRESHOLD_SETTING = "github.copilot.chat.virtualTools.threshold"
 VSCODE_VIRTUAL_TOOLS_THRESHOLD = 128
+LOCAL_PROXY_STDIO_SUPPORT_MESSAGE = (
+    "Local Proxy Mode stdio currently supports Codex TOML, "
+    "Antigravity JSON, Claude Code JSON, Claude Desktop JSON, "
+    "Cursor JSON, Gemini CLI JSON, and VS Code JSON only."
+)
+LOCAL_PROXY_HTTP_SUPPORT_MESSAGE = (
+    "Local Proxy Mode HTTP currently supports Codex TOML only."
+)
+MCP_PROXY_INSTALL_HINT = (
+    "Install the LightNow mcp-proxy and make sure `mcp-proxy` resolves on PATH, "
+    "then re-run the sync so the client config can pin its full path."
+)
 
 
 def default_local_proxy_config_path(client: str) -> Path:
@@ -126,6 +139,44 @@ def discover_local_lightnow_ca_file(registry_api_url: str) -> Optional[Path]:
             return candidate
 
     return None
+
+
+def local_proxy_support_error(
+    client: str, export_format: str, local_proxy_transport: str
+) -> Optional[str]:
+    """Return why a client/format/transport combination lacks Local Proxy support."""
+    if local_proxy_transport == "stdio":
+        if client in LOCAL_PROXY_JSON_CLIENTS and export_format == "json":
+            return None
+        if client == "codex" and export_format == "toml":
+            return None
+        return LOCAL_PROXY_STDIO_SUPPORT_MESSAGE
+    if local_proxy_transport == "http":
+        if client == "codex" and export_format == "toml":
+            return None
+        return LOCAL_PROXY_HTTP_SUPPORT_MESSAGE
+    return "Local Proxy transport must be stdio or http."
+
+
+def mcp_proxy_available() -> bool:
+    """Return whether the mcp-proxy executable resolves on PATH."""
+    return shutil.which("mcp-proxy") is not None
+
+
+def backup_path_for(path: Path) -> Path:
+    """Return the backup path secure_write_text keeps next to a client config."""
+    return path.with_suffix(path.suffix + ".lightnow.bak")
+
+
+def direct_server_aliases(content: str, export_format: str) -> list[str]:
+    """Return non-LightNow MCP server aliases found in a client config."""
+    if export_format not in {"json", "toml"}:
+        return []
+    try:
+        entries = extract_mcp_entries(content, export_format)
+    except ValueError:
+        return []
+    return sorted(alias for alias in entries if alias not in LIGHTNOW_PROXY_ALIASES)
 
 
 @app.command("sync")
@@ -235,6 +286,12 @@ def sync(
     default_format, default_path = CLIENT_DEFAULTS[client]
     export_format = format_ or default_format
     target = (config_path or default_path).expanduser()
+    if local_proxy:
+        support_error = local_proxy_support_error(
+            client, export_format, local_proxy_transport
+        )
+        if support_error:
+            raise_bad_argument("Unsupported Local Proxy client", support_error)
     try:
         bearer_token = require_access_token()
     except AccessTokenExpired:
@@ -255,6 +312,7 @@ def sync(
         local_proxy_config_path or default_local_proxy_config_path(client)
     ).expanduser()
     settings_local_proxy_summary: dict[str, Any] = {}
+    removed_direct_servers: list[str] = []
 
     try:
         if from_settings:
@@ -332,6 +390,8 @@ def sync(
             if export_format == "json"
             else {"aliases": [], "input_ids": []}
         )
+        if local_proxy:
+            removed_direct_servers = direct_server_aliases(existing, export_format)
         if local_proxy and client == "codex" and export_format == "toml":
             existing = prepare_codex_local_proxy_config(existing)
         if (
@@ -350,12 +410,35 @@ def sync(
     except AccessTokenExpired:
         console.print(f"[red]{ACCESS_TOKEN_EXPIRED_MESSAGE}[/red]")
         raise typer.Exit(1)
+    except json.JSONDecodeError as exc:
+        console.print(
+            f"[bold red]Integration sync failed:[/bold red] {target} is not valid JSON ({exc})."
+        )
+        console.print(
+            "Fix the file or restore the .lightnow.bak backup next to it, then re-run the sync."
+        )
+        raise typer.Exit(1) from exc
     except ValueError as exc:
         console.print(f"[bold red]Integration sync failed:[/bold red] {exc}")
         raise typer.Exit(1) from exc
 
     if dry_run:
-        console.print(redact(patched), markup=False)
+        typer.echo(redact(patched))
+        err_console.print("[cyan]Dry run: nothing was written.[/cyan]")
+        err_console.print(f"[cyan]Would write client config: {target}[/cyan]")
+        if local_proxy:
+            err_console.print(
+                f"[cyan]Would write Local Proxy config: {proxy_target}[/cyan]"
+            )
+            if removed_direct_servers:
+                err_console.print(
+                    "[yellow]Would remove direct MCP server entries:[/yellow] "
+                    f"{', '.join(removed_direct_servers)}"
+                )
+            if not mcp_proxy_available():
+                err_console.print(
+                    f"[yellow]mcp-proxy was not found on PATH.[/yellow] {MCP_PROXY_INSTALL_HINT}"
+                )
         return
 
     if (
@@ -373,6 +456,22 @@ def sync(
             console.print("[yellow]Canceled.[/yellow]")
             raise typer.Exit(1)
 
+    if local_proxy and removed_direct_servers and not yes:
+        console.print(
+            f"[yellow]Local Proxy Mode removes direct MCP server entries from {target}:[/yellow] "
+            f"{', '.join(removed_direct_servers)}"
+        )
+        console.print(
+            f"A backup of the current file is kept at {backup_path_for(target)}."
+        )
+        confirmed = typer.confirm(
+            "Replace these entries with one LightNow Local Proxy entry?",
+            default=True,
+        )
+        if not confirmed:
+            console.print("[yellow]Canceled. No files were changed.[/yellow]")
+            raise typer.Exit(1)
+
     if local_proxy:
         secure_write_text(proxy_target, proxy_config)
         console.print(f"[green]Wrote Local Proxy config to {proxy_target}[/green]")
@@ -382,23 +481,33 @@ def sync(
     secure_write_text(target, patched, executable=export_format == "shell")
     if export_format == "json":
         write_json_manifest(manifest, extract_json_managed(generated))
-    if local_proxy and client == "vscode" and not dry_run:
-        configure_vscode_virtual_tools(target.with_name("settings.json"))
+    if local_proxy and client == "vscode":
+        report_vscode_virtual_tools(target.with_name("settings.json"))
 
     console.print(f"[green]Synced {client} profile {profile} to {target}[/green]")
     if local_proxy:
+        if removed_direct_servers:
+            console.print(
+                "[yellow]Removed direct MCP server entries:[/yellow] "
+                f"{', '.join(removed_direct_servers)} "
+                f"(backup: {backup_path_for(target)})"
+            )
         status = analyze_client_config_content(
             client=client,
             export_format=export_format,
             content=patched,
             expected_proxy_config_path=proxy_target,
         )
+        augment_local_proxy_posture(status)
         print_config_status(status, target)
         if from_settings:
             if settings_local_proxy_summary.get("policyMode") == "enforce":
                 console.print(
                     "[cyan]LightNow policy is enforce: managed clients should keep only the Local Proxy MCP entry.[/cyan]"
                 )
+        console.print(
+            f"[cyan]Next: restart {client} so it picks up the LightNow MCP entry.[/cyan]"
+        )
 
 
 def config_status(
@@ -439,11 +548,9 @@ def config_status(
         path=target,
         expected_proxy_config_path=proxy_target,
     )
+    augment_local_proxy_posture(status)
     if json_output:
-        console.print(
-            json.dumps(status, indent=2, sort_keys=True),
-            markup=False,
-        )
+        typer.echo(json.dumps(status, indent=2, sort_keys=True))
         return
     print_config_status(status, target)
 
@@ -539,6 +646,11 @@ def build_local_proxy_export(
     local_proxy_config_path: Optional[Path] = None,
 ) -> str:
     """Build one client config entry that points at the LightNow Local Proxy."""
+    support_error = local_proxy_support_error(
+        client, export_format, local_proxy_transport
+    )
+    if support_error:
+        raise ValueError(support_error)
     if local_proxy_transport == "stdio":
         if client in LOCAL_PROXY_MCP_SERVERS_JSON_CLIENTS and export_format == "json":
             return render_local_proxy_mcp_servers_json(
@@ -548,19 +660,9 @@ def build_local_proxy_export(
             return render_local_proxy_vscode_json(
                 local_proxy_config_path or default_local_proxy_config_path(client)
             )
-        if client != "codex" or export_format != "toml":
-            raise ValueError(
-                "Local Proxy Mode stdio currently supports Codex TOML, "
-                "Antigravity JSON, Claude Code JSON, Claude Desktop JSON, "
-                "Cursor JSON, Gemini CLI JSON, and VS Code JSON only."
-            )
         return render_local_proxy_codex_stdio_toml(
             local_proxy_config_path or default_local_proxy_config_path(client)
         )
-    if local_proxy_transport != "http":
-        raise ValueError("Local Proxy transport must be stdio or http.")
-    if client != "codex" or export_format != "toml":
-        raise ValueError("Local Proxy Mode HTTP currently supports Codex TOML only.")
     parsed = urlparse(local_proxy_url)
     try:
         port = parsed.port
@@ -599,6 +701,18 @@ def warm_local_proxy_tools_cache(local_proxy_config_path: Path) -> None:
             timeout=60,
             check=False,
         )
+    except FileNotFoundError:
+        console.print(
+            "[yellow]Could not warm the Claude Code tools cache: mcp-proxy is not on PATH.[/yellow] "
+            f"{MCP_PROXY_INSTALL_HINT}"
+        )
+        return
+    except subprocess.TimeoutExpired:
+        console.print(
+            "[yellow]Warming the Claude Code tools cache timed out after 60s.[/yellow] "
+            "Claude Code will load tools on its first start instead."
+        )
+        return
     except Exception as exc:
         console.print(f"[yellow]Could not warm Local Proxy tools cache:[/yellow] {exc}")
         return
@@ -609,11 +723,15 @@ def warm_local_proxy_tools_cache(local_proxy_config_path: Path) -> None:
         console.print(
             f"[yellow]Could not warm Local Proxy tools cache:[/yellow] {reason}"
         )
+        console.print(
+            "Claude Code will load tools on its first start instead; "
+            "check `lightnow status` if the LightNow entry stays unavailable."
+        )
         return
 
     summary = result.stdout.strip().splitlines()
     if summary:
-        console.print(f"[green]{summary[-1]}[/green]")
+        console.print(f"[green]Claude Code tools cache:[/green] {summary[-1]}")
 
 
 def render_local_proxy_codex_stdio_toml(local_proxy_config_path: Path) -> str:
@@ -1144,6 +1262,7 @@ def analyze_client_config_file(
             "format": export_format,
             "status": "missing",
             "path": str(path),
+            "expected_proxy_config_path": str(expected_proxy_config_path.expanduser()),
             "local_proxy_present": False,
             "unmanaged_servers": [],
             "legacy_runner_servers": [],
@@ -1157,6 +1276,7 @@ def analyze_client_config_file(
             "format": export_format,
             "status": "unreadable",
             "path": str(path),
+            "expected_proxy_config_path": str(expected_proxy_config_path.expanduser()),
             "local_proxy_present": False,
             "unmanaged_servers": [],
             "legacy_runner_servers": [],
@@ -1188,6 +1308,7 @@ def analyze_client_config_content(
             "format": export_format,
             "status": "invalid",
             "path": str(path) if path else None,
+            "expected_proxy_config_path": str(expected_proxy_config_path.expanduser()),
             "local_proxy_present": False,
             "unmanaged_servers": [],
             "legacy_runner_servers": [],
@@ -1241,12 +1362,29 @@ def analyze_client_config_content(
         "format": export_format,
         "status": status,
         "path": str(path) if path else None,
+        "expected_proxy_config_path": proxy_config_path,
         "local_proxy_present": bool(local_proxy_aliases),
         "local_proxy_aliases": sorted(local_proxy_aliases),
         "unmanaged_servers": sorted(unmanaged_servers),
         "legacy_runner_servers": sorted(legacy_runner_servers),
         "warnings": sorted(set(warnings)),
     }
+
+
+def augment_local_proxy_posture(status: dict[str, Any]) -> dict[str, Any]:
+    """Add Local Proxy runtime checks (config file, mcp-proxy binary) to a posture."""
+    warnings = [str(item) for item in status.get("warnings", [])]
+    expected_path = status.get("expected_proxy_config_path")
+    proxy_config_exists = bool(expected_path) and Path(str(expected_path)).exists()
+    status["proxy_config_exists"] = proxy_config_exists
+    status["mcp_proxy_on_path"] = mcp_proxy_available()
+    if status.get("local_proxy_present"):
+        if not proxy_config_exists:
+            warnings.append("proxy_config_missing")
+        if not status["mcp_proxy_on_path"]:
+            warnings.append("mcp_proxy_not_on_path")
+    status["warnings"] = sorted(set(warnings))
+    return status
 
 
 def extract_mcp_entries(content: str, export_format: str) -> dict[str, dict[str, Any]]:
@@ -1305,6 +1443,56 @@ def is_local_proxy_url(value: str) -> bool:
     return parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost"}
 
 
+def warning_hint(code: str, client: str) -> Optional[str]:
+    """Return a short recovery hint for a posture warning code."""
+    sync_command = f"lightnow sync --client {client} --local-proxy"
+    if code.startswith("invalid_json") or code.startswith("invalid_toml"):
+        return (
+            "the config file could not be parsed; fix it or restore the "
+            ".lightnow.bak backup, then re-run the sync."
+        )
+    if code.startswith("read_failed"):
+        return "the config file could not be read; check its file permissions."
+    hints = {
+        "proxy_config_missing": (
+            f"the Local Proxy config file is missing; re-run `{sync_command}` to recreate it."
+        ),
+        "mcp_proxy_not_on_path": (
+            f"mcp-proxy is not on PATH; {client} cannot start the LightNow entry. "
+            + MCP_PROXY_INSTALL_HINT
+        ),
+        "proxy_config_path_mismatch": (
+            "the LightNow entry points at a different Local Proxy config; "
+            f"re-run `{sync_command}` to update it."
+        ),
+    }
+    return hints.get(code)
+
+
+def config_status_next_step(status: dict[str, Any]) -> Optional[str]:
+    """Return the single most useful next action for a config posture."""
+    client = status.get("client")
+    state = str(status.get("status", "unknown"))
+    sync_command = f"lightnow sync --client {client} --local-proxy"
+    if state in {"missing", "empty", "unmanaged"}:
+        return f"Run `{sync_command}` to manage this client through the LightNow Local Proxy."
+    if state == "legacy_runner":
+        return f"Run `{sync_command}` to migrate the legacy runner entries to Local Proxy Mode."
+    if state == "mixed":
+        return (
+            "Unmanaged servers bypass LightNow. Remove them from the client config "
+            f"or import them into LightNow, then run `{sync_command}`."
+        )
+    if state == "invalid":
+        return (
+            "Fix the config file (or restore the .lightnow.bak backup), "
+            f"then run `{sync_command}`."
+        )
+    if state == "unreadable":
+        return "Fix the file permissions, then re-run `lightnow config-status`."
+    return None
+
+
 def print_config_status(status: dict[str, Any], path: Path) -> None:
     """Print a concise, non-secret client config posture summary."""
     state = status.get("status", "unknown")
@@ -1321,6 +1509,14 @@ def print_config_status(status: dict[str, Any], path: Path) -> None:
         f"[{color}]Client config posture: {state}[/{color}] "
         f"({status.get('client')} at {path})"
     )
+    aliases = status.get("local_proxy_aliases")
+    if isinstance(aliases, list) and aliases:
+        console.print(f"LightNow Local Proxy entry: {', '.join(map(str, aliases))}")
+    expected_path = status.get("expected_proxy_config_path")
+    if expected_path:
+        exists = status.get("proxy_config_exists")
+        suffix = "" if exists is None else (" (present)" if exists else " (missing)")
+        console.print(f"Local Proxy config: {expected_path}{suffix}")
     unmanaged = status.get("unmanaged_servers")
     if isinstance(unmanaged, list) and unmanaged:
         console.print(
@@ -1334,8 +1530,16 @@ def print_config_status(status: dict[str, Any], path: Path) -> None:
             f"{', '.join(map(str, legacy))}"
         )
     warnings = status.get("warnings")
+    client = str(status.get("client", ""))
     if isinstance(warnings, list) and warnings:
         console.print(f"[yellow]Warnings:[/yellow] {', '.join(map(str, warnings))}")
+        for code in warnings:
+            hint = warning_hint(str(code), client)
+            if hint:
+                console.print(f"  [yellow]{code}:[/yellow] {hint}")
+    next_step = config_status_next_step(status)
+    if next_step:
+        console.print(f"[cyan]Next:[/cyan] {next_step}")
 
 
 def patch_config(
@@ -1389,7 +1593,7 @@ def prepare_json_local_proxy_config(existing: str) -> str:
     return json.dumps(current, indent=2, ensure_ascii=False) + "\n"
 
 
-def configure_vscode_virtual_tools(settings_path: Path) -> None:
+def configure_vscode_virtual_tools(settings_path: Path) -> str:
     """Enable VS Code's virtual tools mode for large MCP tool sets."""
     existing = settings_path.read_text() if settings_path.exists() else ""
     settings = json.loads(existing) if existing.strip() else {}
@@ -1397,12 +1601,34 @@ def configure_vscode_virtual_tools(settings_path: Path) -> None:
         raise ValueError("VS Code settings must be a JSON object.")
     current_value = settings.get(VSCODE_VIRTUAL_TOOLS_THRESHOLD_SETTING)
     if current_value == VSCODE_VIRTUAL_TOOLS_THRESHOLD:
-        return
+        return "unchanged"
     settings[VSCODE_VIRTUAL_TOOLS_THRESHOLD_SETTING] = VSCODE_VIRTUAL_TOOLS_THRESHOLD
     secure_write_text(
         settings_path,
         json.dumps(settings, indent=2, ensure_ascii=False) + "\n",
     )
+    return "updated"
+
+
+def report_vscode_virtual_tools(settings_path: Path) -> None:
+    """Apply the VS Code virtual tools setting without failing the whole sync."""
+    try:
+        state = configure_vscode_virtual_tools(settings_path)
+    except (OSError, ValueError) as exc:
+        console.print(
+            f"[yellow]Could not update VS Code settings at {settings_path}:[/yellow] {exc}"
+        )
+        console.print(
+            f'Set "{VSCODE_VIRTUAL_TOOLS_THRESHOLD_SETTING}": '
+            f"{VSCODE_VIRTUAL_TOOLS_THRESHOLD} there manually so all LightNow tools stay usable."
+        )
+        return
+    if state == "updated":
+        console.print(
+            "[cyan]Enabled VS Code virtual tools "
+            f'("{VSCODE_VIRTUAL_TOOLS_THRESHOLD_SETTING}": {VSCODE_VIRTUAL_TOOLS_THRESHOLD}) '
+            "so large LightNow tool sets stay usable.[/cyan]"
+        )
 
 
 def remove_managed_block(existing: str) -> str:
@@ -1589,7 +1815,17 @@ def secure_write_text(path: Path, content: str, *, executable: bool = False) -> 
 def redact(value: str) -> str:
     """Redact secret-like lines from terminal output."""
     redacted = value
-    for marker in ("TOKEN", "SECRET", "PASSWORD", "PWD", "KEY"):
+    for marker in (
+        "TOKEN",
+        "SECRET",
+        "PASSWORD",
+        "PWD",
+        "KEY",
+        "AUTHORIZATION",
+        "BEARER",
+        "CREDENTIAL",
+        "COOKIE",
+    ):
         redacted = redact_marker(redacted, marker)
     return redacted
 

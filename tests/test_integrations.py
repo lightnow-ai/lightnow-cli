@@ -944,6 +944,7 @@ def test_sync_local_proxy_dry_run_writes_one_codex_entry_without_fetching_export
                     "--client",
                     "codex",
                     "--local-proxy",
+                    "--yes",
                     "--config-path",
                     str(target),
                     "--dry-run",
@@ -1052,6 +1053,7 @@ def test_sync_local_proxy_replaces_existing_codex_mcp_servers() -> None:
                     "--client",
                     "codex",
                     "--local-proxy",
+                    "--yes",
                     "--local-proxy-url",
                     "http://localhost:8765/mcp",
                     "--local-proxy-config-path",
@@ -1126,6 +1128,7 @@ def test_sync_local_proxy_replaces_existing_claude_desktop_mcp_servers() -> None
                     "--client",
                     "claude-desktop",
                     "--local-proxy",
+                    "--yes",
                     "--local-proxy-config-path",
                     str(proxy_config),
                     "--config-path",
@@ -1193,6 +1196,7 @@ def test_sync_local_proxy_replaces_existing_claude_code_mcp_servers() -> None:
                     "--client",
                     "claude-code",
                     "--local-proxy",
+                    "--yes",
                     "--local-proxy-config-path",
                     str(proxy_config),
                     "--config-path",
@@ -1284,6 +1288,7 @@ def test_sync_local_proxy_replaces_existing_antigravity_mcp_servers() -> None:
                     "--client",
                     "antigravity",
                     "--local-proxy",
+                    "--yes",
                     "--config-path",
                     str(target),
                 ],
@@ -1344,6 +1349,7 @@ def test_sync_local_proxy_replaces_existing_gemini_cli_mcp_servers() -> None:
                     "--client",
                     "gemini-cli",
                     "--local-proxy",
+                    "--yes",
                     "--config-path",
                     str(target),
                 ],
@@ -1404,6 +1410,7 @@ def test_sync_local_proxy_replaces_existing_cursor_mcp_servers() -> None:
                     "--client",
                     "cursor",
                     "--local-proxy",
+                    "--yes",
                     "--config-path",
                     str(target),
                 ],
@@ -1466,6 +1473,7 @@ def test_sync_local_proxy_replaces_existing_vscode_mcp_servers() -> None:
                     "--client",
                     "vscode",
                     "--local-proxy",
+                    "--yes",
                     "--config-path",
                     str(target),
                 ],
@@ -2617,3 +2625,302 @@ def test_print_import_summary_handles_missing_server_list(capsys) -> None:
     output = capsys.readouterr().out
     assert "Imported codex.toml into LightNow profile default" in output
     assert "total=1" in output
+
+
+def test_sync_local_proxy_prompts_before_removing_direct_servers() -> None:
+    """Removing direct MCP entries requires explicit consent without --yes."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "claude_desktop_config.json"
+        proxy_config = Path(tmp) / "claude.yaml"
+        original = json.dumps({"mcpServers": {"github": {"command": "docker"}}})
+        target.write_text(original)
+        with patch(
+            "lightnow_cli.commands.integrations.require_access_token",
+            return_value="token",
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "sync",
+                    "--client",
+                    "claude-desktop",
+                    "--local-proxy",
+                    "--local-proxy-config-path",
+                    str(proxy_config),
+                    "--config-path",
+                    str(target),
+                ],
+                input="n\n",
+            )
+
+        assert result.exit_code == 1
+        assert "github" in result.stdout
+        assert "Canceled" in result.stdout
+        assert target.read_text() == original
+        assert not proxy_config.exists()
+
+
+def test_sync_local_proxy_rejects_unsupported_client_before_login() -> None:
+    """Unsupported Local Proxy clients fail fast without demanding a login."""
+    runner = CliRunner()
+    with patch(
+        "lightnow_cli.commands.integrations.require_access_token",
+        side_effect=AssertionError("must not require a token for unsupported clients"),
+    ):
+        result = runner.invoke(
+            app,
+            ["sync", "--client", "windsurf", "--local-proxy"],
+        )
+
+    assert result.exit_code == 2
+    assert "Unsupported Local Proxy client" in result.stdout
+    assert "Codex TOML" in result.stdout.replace("\n", "")
+
+
+def test_sync_local_proxy_reports_invalid_existing_json() -> None:
+    """Broken client JSON produces an actionable error instead of a traceback."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "claude_desktop_config.json"
+        proxy_config = Path(tmp) / "claude.yaml"
+        target.write_text("{not json")
+        with patch(
+            "lightnow_cli.commands.integrations.require_access_token",
+            return_value="token",
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "sync",
+                    "--client",
+                    "claude-desktop",
+                    "--local-proxy",
+                    "--yes",
+                    "--local-proxy-config-path",
+                    str(proxy_config),
+                    "--config-path",
+                    str(target),
+                ],
+            )
+
+        assert result.exit_code == 1
+        assert "not valid JSON" in result.stdout
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert target.read_text() == "{not json"
+        assert not proxy_config.exists()
+
+
+def test_sync_local_proxy_dry_run_warns_when_mcp_proxy_missing() -> None:
+    """Dry-run points out a missing mcp-proxy binary with an install hint."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "config.toml"
+        with (
+            patch(
+                "lightnow_cli.commands.integrations.require_access_token",
+                return_value="token",
+            ),
+            patch(
+                "lightnow_cli.commands.integrations.shutil.which",
+                return_value=None,
+            ),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "sync",
+                    "--client",
+                    "codex",
+                    "--local-proxy",
+                    "--config-path",
+                    str(target),
+                    "--dry-run",
+                ],
+            )
+
+    assert result.exit_code == 0
+    assert "Dry run: nothing was written." in result.stderr
+    assert "mcp-proxy was not found on PATH" in result.stderr
+    assert not target.exists()
+
+
+def test_config_status_reports_missing_proxy_config_and_binary() -> None:
+    """Posture JSON surfaces broken Local Proxy runtime prerequisites."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "mcp.json"
+        proxy_config = Path(tmp) / "proxy.yaml"
+        target.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "LightNow": {
+                            "command": "mcp-proxy",
+                            "args": [
+                                "--config",
+                                str(proxy_config),
+                                "--transport",
+                                "stdio",
+                            ],
+                        }
+                    }
+                }
+            )
+        )
+        with patch(
+            "lightnow_cli.commands.integrations.shutil.which",
+            return_value=None,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "config-status",
+                    "--client",
+                    "claude-desktop",
+                    "--config-path",
+                    str(target),
+                    "--local-proxy-config-path",
+                    str(proxy_config),
+                    "--json",
+                ],
+            )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "managed"
+    assert payload["expected_proxy_config_path"] == str(proxy_config)
+    assert payload["proxy_config_exists"] is False
+    assert payload["mcp_proxy_on_path"] is False
+    assert "proxy_config_missing" in payload["warnings"]
+    assert "mcp_proxy_not_on_path" in payload["warnings"]
+
+
+def test_config_status_prints_next_step_for_unmanaged_config() -> None:
+    """Human posture output tells lazy users the exact next command."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "mcp.json"
+        proxy_config = Path(tmp) / "proxy.yaml"
+        target.write_text(json.dumps({"mcpServers": {"github": {"command": "docker"}}}))
+        result = runner.invoke(
+            app,
+            [
+                "config-status",
+                "--client",
+                "claude-desktop",
+                "--config-path",
+                str(target),
+                "--local-proxy-config-path",
+                str(proxy_config),
+            ],
+        )
+
+    assert result.exit_code == 0
+    assert "unmanaged" in result.stdout
+    assert "lightnow sync --client claude-desktop" in result.stdout
+
+
+def test_redact_hides_authorization_and_bearer_lines() -> None:
+    """Authorization headers never reach dry-run or error output in plaintext."""
+    result = redact(
+        '"Authorization": "Bearer eyJhbGciOiJSUzI1NiJ9.secret"\n'
+        'X-Custom-Credential = "cred-value"\n'
+        'safe = "value"\n'
+    )
+
+    assert "eyJhbGciOiJSUzI1NiJ9" not in result
+    assert "cred-value" not in result
+    assert '"Authorization": "[REDACTED]"' in result
+    assert 'safe = "value"' in result
+
+
+def test_warm_cache_reports_missing_mcp_proxy(capsys) -> None:
+    """A missing mcp-proxy binary yields an install hint, not a stacktrace."""
+    with (
+        patch(
+            "lightnow_cli.commands.integrations.local_proxy_command",
+            return_value="mcp-proxy",
+        ),
+        patch(
+            "lightnow_cli.commands.integrations.subprocess.run",
+            side_effect=FileNotFoundError(2, "No such file or directory"),
+        ),
+    ):
+        warm_local_proxy_tools_cache(Path("/tmp/lightnow/claude-code.yaml"))
+
+    output = capsys.readouterr().out.replace("\n", "")
+    assert "Could not warm the Claude Code tools cache" in output
+    assert "Install the LightNow mcp-proxy" in output
+
+
+def test_sync_local_proxy_vscode_survives_invalid_settings_json() -> None:
+    """JSONC in settings.json degrades to a manual hint instead of crashing."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "mcp.json"
+        settings = Path(tmp) / "settings.json"
+        proxy_config = Path(tmp) / "vscode.yaml"
+        settings.write_text('{\n  // comment\n  "editor.fontSize": 14\n}\n')
+        with (
+            patch(
+                "lightnow_cli.commands.integrations.require_access_token",
+                return_value="token",
+            ),
+            patch(
+                "lightnow_cli.commands.integrations.default_local_proxy_config_path",
+                return_value=proxy_config,
+            ),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "sync",
+                    "--client",
+                    "vscode",
+                    "--local-proxy",
+                    "--yes",
+                    "--config-path",
+                    str(target),
+                ],
+            )
+
+        settings_text = settings.read_text()
+
+    assert result.exit_code == 0
+    assert "Could not update VS Code settings" in result.stdout
+    assert "virtualTools.threshold" in result.stdout.replace("\n", "")
+    assert settings_text == '{\n  // comment\n  "editor.fontSize": 14\n}\n'
+
+
+def test_sync_local_proxy_reports_removed_servers_and_next_step() -> None:
+    """Post-sync output names removed entries, the backup, and the next action."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "claude_desktop_config.json"
+        proxy_config = Path(tmp) / "claude.yaml"
+        target.write_text(json.dumps({"mcpServers": {"github": {"command": "docker"}}}))
+        with patch(
+            "lightnow_cli.commands.integrations.require_access_token",
+            return_value="token",
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "sync",
+                    "--client",
+                    "claude-desktop",
+                    "--local-proxy",
+                    "--yes",
+                    "--local-proxy-config-path",
+                    str(proxy_config),
+                    "--config-path",
+                    str(target),
+                ],
+            )
+
+    assert result.exit_code == 0
+    assert "Removed direct MCP server entries" in result.stdout
+    assert "github" in result.stdout
+    assert "lightnow.bak" in result.stdout
+    assert "Next: restart claude-desktop" in result.stdout
