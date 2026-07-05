@@ -92,6 +92,7 @@ LOCAL_PROXY_JSON_CLIENTS = (
     LOCAL_PROXY_MCP_SERVERS_JSON_CLIENTS | LOCAL_PROXY_VSCODE_JSON_CLIENTS
 )
 DEFAULT_LOCAL_PROXY_CONFIG_DIR = Path.home() / ".lightnow" / "mcp-proxy"
+LOCAL_LIGHTNOW_CA_RELATIVE_PATH = Path(".local-runtime/certs/lightnow-local-ca.crt")
 LIGHTNOW_PROXY_ALIASES = {"lightnow", "LightNow"}
 LOCAL_PROXY_RUNNER_VERSION = "0.1.2"
 
@@ -100,6 +101,27 @@ def default_local_proxy_config_path(client: str) -> Path:
     """Return the per-client Local Proxy config path used by sync."""
     safe_client = re.sub(r"[^A-Za-z0-9_.-]+", "-", client).strip("-") or "client"
     return DEFAULT_LOCAL_PROXY_CONFIG_DIR / f"{safe_client}.yaml"
+
+
+def discover_local_lightnow_ca_file(registry_api_url: str) -> Optional[Path]:
+    """Find the local LightNow CA for local development Registry API URLs."""
+    parsed = urlparse(registry_api_url)
+    if parsed.hostname is None or not parsed.hostname.endswith(".lightnow.local"):
+        return None
+
+    for env_name in ("LIGHTNOW_REGISTRY_CA_FILE", "NODE_EXTRA_CA_CERTS"):
+        value = os.environ.get(env_name)
+        if value:
+            candidate = Path(value).expanduser()
+            if candidate.exists():
+                return candidate
+
+    for base in [Path.cwd(), *Path.cwd().parents]:
+        candidate = base / LOCAL_LIGHTNOW_CA_RELATIVE_PATH
+        if candidate.exists():
+            return candidate
+
+    return None
 
 
 @app.command("sync")
@@ -649,8 +671,11 @@ def build_local_proxy_config(
     }
     if tenant:
         registry_api["cli_tenant_id"] = tenant
-    if registry_ca_file is not None:
-        registry_api["ca_file"] = str(registry_ca_file.expanduser())
+    resolved_registry_ca_file = registry_ca_file or discover_local_lightnow_ca_file(
+        registry_api_url
+    )
+    if resolved_registry_ca_file is not None:
+        registry_api["ca_file"] = str(resolved_registry_ca_file.expanduser())
 
     local_proxy_config: dict[str, Any] = {
         "enabled": True,

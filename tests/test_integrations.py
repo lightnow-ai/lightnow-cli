@@ -25,6 +25,7 @@ from lightnow_cli.commands.integrations import (
     build_local_proxy_export,
     build_runner_export,
     default_local_proxy_config_path,
+    discover_local_lightnow_ca_file,
     extract_json_managed,
     fetch_export,
     fetch_integration_settings,
@@ -1538,6 +1539,51 @@ def test_build_local_proxy_config_can_include_registry_ca_file() -> None:
     payload = yaml.safe_load(generated)
 
     assert payload["registry_api"]["ca_file"] == "/tmp/lightnow-local-ca.crt"
+
+
+def test_discover_local_lightnow_ca_file_uses_environment(monkeypatch) -> None:
+    """Local LightNow Registry URLs can pick up a CA from the environment."""
+    with tempfile.TemporaryDirectory() as tmp:
+        ca_file = Path(tmp) / "lightnow-local-ca.crt"
+        ca_file.write_text("local-ca")
+        monkeypatch.setenv("LIGHTNOW_REGISTRY_CA_FILE", str(ca_file))
+
+        assert (
+            discover_local_lightnow_ca_file("https://registry-api.lightnow.local/v0.1")
+            == ca_file
+        )
+
+
+def test_discover_local_lightnow_ca_file_skips_public_registry(monkeypatch) -> None:
+    """Public Registry URLs must not inherit local development CA files."""
+    with tempfile.TemporaryDirectory() as tmp:
+        ca_file = Path(tmp) / "lightnow-local-ca.crt"
+        ca_file.write_text("local-ca")
+        monkeypatch.setenv("LIGHTNOW_REGISTRY_CA_FILE", str(ca_file))
+
+        assert (
+            discover_local_lightnow_ca_file("https://registry-api.lightnow.ai/v0.1")
+            is None
+        )
+
+
+def test_build_local_proxy_config_auto_includes_local_lightnow_ca(monkeypatch) -> None:
+    """Local Proxy config discovers the local LightNow CA for local API URLs."""
+    with tempfile.TemporaryDirectory() as tmp:
+        ca_file = Path(tmp) / "lightnow-local-ca.crt"
+        ca_file.write_text("local-ca")
+        monkeypatch.setenv("LIGHTNOW_REGISTRY_CA_FILE", str(ca_file))
+
+        generated = build_local_proxy_config(
+            local_proxy_url="http://127.0.0.1:8080/mcp",
+            profile="default",
+            registry_api_url="https://registry-api.lightnow.local/v0.1",
+            tenant=None,
+        )
+
+    payload = yaml.safe_load(generated)
+
+    assert payload["registry_api"]["ca_file"] == str(ca_file)
 
 
 def test_sync_runner_passes_tenant_to_profile_server_lookup() -> None:
