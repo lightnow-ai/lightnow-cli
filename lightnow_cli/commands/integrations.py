@@ -227,7 +227,11 @@ def sync(
         )
         if local_proxy and client == "codex" and export_format == "toml":
             existing = prepare_codex_local_proxy_config(existing)
-        if local_proxy and client == "claude-desktop" and export_format == "json":
+        if (
+            local_proxy
+            and client in {"claude-desktop", "gemini-cli"}
+            and export_format == "json"
+        ):
             existing = prepare_json_local_proxy_config(existing)
         patched = patch_config(
             existing,
@@ -365,13 +369,13 @@ def build_local_proxy_export(
 ) -> str:
     """Build one client config entry that points at the LightNow Local Proxy."""
     if local_proxy_transport == "stdio":
-        if client in {"claude-desktop"} and export_format == "json":
+        if client in {"claude-desktop", "gemini-cli"} and export_format == "json":
             return render_local_proxy_mcp_servers_json(
                 local_proxy_config_path or DEFAULT_LOCAL_PROXY_CONFIG_PATH
             )
         if client != "codex" or export_format != "toml":
             raise ValueError(
-                "Local Proxy Mode stdio currently supports Codex TOML and Claude Desktop JSON only."
+                "Local Proxy Mode stdio currently supports Codex TOML, Claude Desktop JSON, and Gemini CLI JSON only."
             )
         return render_local_proxy_codex_stdio_toml(
             local_proxy_config_path or DEFAULT_LOCAL_PROXY_CONFIG_PATH

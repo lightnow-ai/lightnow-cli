@@ -439,6 +439,26 @@ def test_local_proxy_export_for_claude_desktop_writes_one_stdio_server() -> None
     ]
 
 
+def test_local_proxy_export_for_gemini_cli_writes_one_stdio_server() -> None:
+    """Local Proxy Mode writes one Gemini CLI entry that auto-starts the proxy."""
+    generated = build_local_proxy_export(
+        client="gemini-cli",
+        export_format="json",
+        local_proxy_url="http://127.0.0.1:8080/mcp",
+        local_proxy_config_path=Path("/tmp/lightnow/mcp-proxy.yaml"),
+    )
+    payload = json.loads(generated)
+
+    assert list(payload["mcpServers"]) == ["LightNow"]
+    assert payload["mcpServers"]["LightNow"]["command"].endswith("mcp-proxy")
+    assert payload["mcpServers"]["LightNow"]["args"] == [
+        "--config",
+        "/tmp/lightnow/mcp-proxy.yaml",
+        "--transport",
+        "stdio",
+    ]
+
+
 def test_local_proxy_export_rejects_non_local_urls() -> None:
     """Local Proxy Mode must not silently configure a hosted endpoint."""
     for url in [
@@ -470,7 +490,7 @@ def test_local_proxy_export_rejects_unsupported_clients() -> None:
             local_proxy_url="http://127.0.0.1:8080/mcp",
         )
     except ValueError as exc:
-        assert "Codex TOML and Claude Desktop JSON" in str(exc)
+        assert "Codex TOML, Claude Desktop JSON, and Gemini CLI JSON" in str(exc)
     else:
         raise AssertionError("expected ValueError")
 
@@ -932,6 +952,63 @@ def test_sync_local_proxy_replaces_existing_claude_desktop_mcp_servers() -> None
     ]
     assert "secret" not in patched_text
     assert proxy_payload["local_proxy"]["client_name"] == "claude-desktop"
+    assert proxy_payload["local_proxy"]["client_transport"] == "stdio"
+
+
+def test_sync_local_proxy_replaces_existing_gemini_cli_mcp_servers() -> None:
+    """Gemini CLI Local Proxy sync leaves one LightNow MCP server entry."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "settings.json"
+        proxy_config = Path(tmp) / "mcp-proxy.yaml"
+        target.write_text(
+            json.dumps(
+                {
+                    "selectedAuthType": "oauth-personal",
+                    "theme": "Default",
+                    "mcpServers": {
+                        "github": {
+                            "command": "docker",
+                            "env": {"GITHUB_TOKEN": "secret"},
+                        }
+                    },
+                }
+            )
+        )
+        with patch(
+            "lightnow_cli.commands.integrations.require_access_token",
+            return_value="token",
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "sync",
+                    "--client",
+                    "gemini-cli",
+                    "--local-proxy",
+                    "--local-proxy-config-path",
+                    str(proxy_config),
+                    "--config-path",
+                    str(target),
+                ],
+            )
+            patched = json.loads(target.read_text())
+            patched_text = target.read_text()
+            proxy_payload = yaml.safe_load(proxy_config.read_text())
+
+    assert result.exit_code == 0
+    assert patched["selectedAuthType"] == "oauth-personal"
+    assert patched["theme"] == "Default"
+    assert list(patched["mcpServers"]) == ["LightNow"]
+    assert patched["mcpServers"]["LightNow"]["command"].endswith("mcp-proxy")
+    assert patched["mcpServers"]["LightNow"]["args"] == [
+        "--config",
+        str(proxy_config),
+        "--transport",
+        "stdio",
+    ]
+    assert "secret" not in patched_text
+    assert proxy_payload["local_proxy"]["client_name"] == "gemini-cli"
     assert proxy_payload["local_proxy"]["client_transport"] == "stdio"
 
 
