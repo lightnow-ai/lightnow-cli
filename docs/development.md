@@ -39,6 +39,32 @@ make package
 The tests cover command parsing, validation logic, token refresh, registry
 queries, sync patching, local runner behavior, and secret redaction.
 
+## Local Proxy Config Posture
+
+`lightnow sync --client <client> --local-proxy` should leave the target MCP
+client with one LightNow entry and no unmanaged MCP servers unless the customer
+explicitly keeps a mixed setup.
+
+Use the redacted status command while testing client integrations:
+
+```bash
+lightnow config-status --client codex
+lightnow config-status --client claude-desktop
+lightnow config-status --client antigravity --json
+```
+
+Expected states:
+
+- `managed`: only the LightNow Local Proxy entry is configured.
+- `mixed`: LightNow Local Proxy exists, but unmanaged MCP entries are also
+  present.
+- `unmanaged`: MCP entries exist, but none point at the LightNow Local Proxy.
+- `legacy_runner`: older per-server `lightnow run` wrappers are still present.
+- `missing`, `invalid` or `unreadable`: the client config cannot be used as-is.
+
+The command must not print secrets, headers or payloads. It is the local building
+block for future UI-led enablement and enterprise posture reporting.
+
 ## Local LightNow Environment
 
 Use the local profile when working against the LightNow local stack:

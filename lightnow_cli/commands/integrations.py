@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import tempfile
+import tomllib
 from pathlib import Path
 from typing import Any, Optional, cast
 from urllib.parse import urlparse
@@ -62,6 +63,8 @@ CLIENTS = sorted(CLIENT_DEFAULTS)
 SECRET_MODES = ["placeholder", "plaintext"]
 LOCAL_PROXY_JSON_CLIENTS = {"antigravity", "claude-desktop", "gemini-cli"}
 DEFAULT_LOCAL_PROXY_CONFIG_DIR = Path.home() / ".lightnow" / "mcp-proxy"
+LIGHTNOW_PROXY_ALIASES = {"lightnow", "LightNow"}
+LOCAL_PROXY_RUNNER_VERSION = "0.1.2"
 
 
 def default_local_proxy_config_path(client: str) -> Path:
@@ -196,6 +199,7 @@ def sync(
             )
             proxy_config = build_local_proxy_config(
                 local_proxy_url=local_proxy_url,
+                local_proxy_transport=local_proxy_transport,
                 profile=profile,
                 client=client,
                 registry_api_url=registry_api_url,
@@ -283,6 +287,61 @@ def sync(
         write_json_manifest(manifest, extract_json_managed(generated))
 
     console.print(f"[green]Synced {client} profile {profile} to {target}[/green]")
+    if local_proxy:
+        status = analyze_client_config_content(
+            client=client,
+            export_format=export_format,
+            content=patched,
+            expected_proxy_config_path=proxy_target,
+        )
+        print_config_status(status, target)
+
+
+def config_status(
+    client: Annotated[str, typer.Option("--client", help="Target MCP client")],
+    config_path: Annotated[
+        Optional[Path],
+        typer.Option("--config-path", help="Client config file to inspect"),
+    ] = None,
+    format_: Annotated[
+        Optional[str],
+        typer.Option("--format", help="Config format; defaults to the client format"),
+    ] = None,
+    local_proxy_config_path: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--local-proxy-config-path",
+            help="Expected LightNow Local Proxy config path.",
+        ),
+    ] = None,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Print machine-readable posture JSON"),
+    ] = False,
+) -> None:
+    """Inspect whether a client config is managed through LightNow Local Proxy."""
+    if client not in CLIENT_DEFAULTS:
+        raise_bad_argument("Unsupported client", f"Use one of: {', '.join(CLIENTS)}")
+    default_format, default_path = CLIENT_DEFAULTS[client]
+    export_format = format_ or default_format
+    target = (config_path or default_path).expanduser()
+    proxy_target = (
+        local_proxy_config_path or default_local_proxy_config_path(client)
+    ).expanduser()
+
+    status = analyze_client_config_file(
+        client=client,
+        export_format=export_format,
+        path=target,
+        expected_proxy_config_path=proxy_target,
+    )
+    if json_output:
+        console.print(
+            json.dumps(status, indent=2, sort_keys=True),
+            markup=False,
+        )
+        return
+    print_config_status(status, target)
 
 
 @app.command("import-config")
@@ -465,6 +524,7 @@ def build_local_proxy_config(
     *,
     local_proxy_url: str,
     profile: str,
+    local_proxy_transport: str = "stdio",
     client: str = "codex",
     registry_api_url: str,
     tenant: Optional[str],
@@ -507,8 +567,10 @@ def build_local_proxy_config(
             "client_name": client,
             "client_version": None,
             "runner_name": "lightnow-local-proxy",
-            "runner_version": "0.1.0",
-            "client_transport": "stdio",
+            "runner_version": LOCAL_PROXY_RUNNER_VERSION,
+            "client_transport": "streamable-http"
+            if local_proxy_transport == "http"
+            else "stdio",
         },
         "auth": {
             "enabled": False,
@@ -850,6 +912,211 @@ def print_import_summary(result: dict[str, Any], source_path: Path) -> None:
             item.get("server_name") if isinstance(item.get("server_name"), str) else "-"
         )
         console.print(f"- {alias}: {status} -> {server_name}")
+
+
+def analyze_client_config_file(
+    *,
+    client: str,
+    export_format: str,
+    path: Path,
+    expected_proxy_config_path: Path,
+) -> dict[str, Any]:
+    """Inspect a client config file without exposing secrets or payload values."""
+    if not path.exists():
+        return {
+            "client": client,
+            "format": export_format,
+            "status": "missing",
+            "path": str(path),
+            "local_proxy_present": False,
+            "unmanaged_servers": [],
+            "legacy_runner_servers": [],
+            "warnings": ["config_missing"],
+        }
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return {
+            "client": client,
+            "format": export_format,
+            "status": "unreadable",
+            "path": str(path),
+            "local_proxy_present": False,
+            "unmanaged_servers": [],
+            "legacy_runner_servers": [],
+            "warnings": [f"read_failed:{exc.__class__.__name__}"],
+        }
+    return analyze_client_config_content(
+        client=client,
+        export_format=export_format,
+        content=content,
+        expected_proxy_config_path=expected_proxy_config_path,
+        path=path,
+    )
+
+
+def analyze_client_config_content(
+    *,
+    client: str,
+    export_format: str,
+    content: str,
+    expected_proxy_config_path: Path,
+    path: Optional[Path] = None,
+) -> dict[str, Any]:
+    """Classify LightNow Local Proxy posture for supported client config shapes."""
+    try:
+        entries = extract_mcp_entries(content, export_format)
+    except ValueError as exc:
+        return {
+            "client": client,
+            "format": export_format,
+            "status": "invalid",
+            "path": str(path) if path else None,
+            "local_proxy_present": False,
+            "unmanaged_servers": [],
+            "legacy_runner_servers": [],
+            "warnings": [str(exc)],
+        }
+
+    local_proxy_aliases: list[str] = []
+    legacy_runner_servers: list[str] = []
+    unmanaged_servers: list[str] = []
+    proxy_config_path = str(expected_proxy_config_path.expanduser())
+    warnings: list[str] = []
+    for alias, entry in entries.items():
+        command = entry.get("command") if isinstance(entry.get("command"), str) else ""
+        args = entry.get("args") if isinstance(entry.get("args"), list) else []
+        url = entry.get("url") if isinstance(entry.get("url"), str) else ""
+        is_proxy_alias = alias in LIGHTNOW_PROXY_ALIASES
+        is_mcp_proxy = command_looks_like(
+            command,
+            "mcp-proxy",
+        ) or is_local_proxy_url(url)
+        is_lightnow_runner = command_looks_like(command, "lightnow") and "run" in [
+            str(arg) for arg in args
+        ]
+
+        if is_proxy_alias and is_mcp_proxy:
+            local_proxy_aliases.append(alias)
+            if proxy_config_path not in [str(arg) for arg in args] and command:
+                warnings.append("proxy_config_path_mismatch")
+            continue
+        if is_lightnow_runner:
+            legacy_runner_servers.append(alias)
+            continue
+        unmanaged_servers.append(alias)
+
+    if local_proxy_aliases and not unmanaged_servers and not legacy_runner_servers:
+        status = "managed"
+    elif local_proxy_aliases:
+        status = "mixed"
+    elif legacy_runner_servers and not unmanaged_servers:
+        status = "legacy_runner"
+    elif entries:
+        status = "unmanaged"
+    else:
+        status = "empty"
+
+    return {
+        "client": client,
+        "format": export_format,
+        "status": status,
+        "path": str(path) if path else None,
+        "local_proxy_present": bool(local_proxy_aliases),
+        "local_proxy_aliases": sorted(local_proxy_aliases),
+        "unmanaged_servers": sorted(unmanaged_servers),
+        "legacy_runner_servers": sorted(legacy_runner_servers),
+        "warnings": sorted(set(warnings)),
+    }
+
+
+def extract_mcp_entries(content: str, export_format: str) -> dict[str, dict[str, Any]]:
+    """Return MCP server entries from known client config formats."""
+    if not content.strip():
+        return {}
+    if export_format == "toml":
+        try:
+            payload = tomllib.loads(content)
+        except tomllib.TOMLDecodeError as exc:
+            raise ValueError(f"invalid_toml:{exc.__class__.__name__}") from exc
+        servers = payload.get("mcp_servers") if isinstance(payload, dict) else None
+        if servers is None:
+            return {}
+        if not isinstance(servers, dict):
+            raise ValueError("invalid_toml:mcp_servers_not_object")
+        return {
+            str(alias): entry
+            for alias, entry in servers.items()
+            if isinstance(entry, dict)
+        }
+    if export_format == "json":
+        try:
+            payload = json.loads(content)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"invalid_json:{exc.__class__.__name__}") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("invalid_json:root_not_object")
+        entries: dict[str, dict[str, Any]] = {}
+        for key in ("mcpServers", "servers"):
+            section = payload.get(key)
+            if section is None:
+                continue
+            if not isinstance(section, dict):
+                raise ValueError(f"invalid_json:{key}_not_object")
+            for alias, entry in section.items():
+                if isinstance(entry, dict):
+                    entries[str(alias)] = entry
+        return entries
+    raise ValueError(f"unsupported_format:{export_format}")
+
+
+def command_looks_like(command: str, executable: str) -> bool:
+    """Match a command by executable name while allowing absolute paths."""
+    if command == executable:
+        return True
+    normalized = command.replace("\\", "/").rstrip("/")
+    return normalized.endswith(f"/{executable}")
+
+
+def is_local_proxy_url(value: str) -> bool:
+    """Return whether a URL points to an explicitly local proxy endpoint."""
+    if not value:
+        return False
+    parsed = urlparse(value)
+    return parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost"}
+
+
+def print_config_status(status: dict[str, Any], path: Path) -> None:
+    """Print a concise, non-secret client config posture summary."""
+    state = status.get("status", "unknown")
+    color = {
+        "managed": "green",
+        "mixed": "yellow",
+        "legacy_runner": "yellow",
+        "unmanaged": "red",
+        "invalid": "red",
+        "missing": "yellow",
+        "empty": "yellow",
+    }.get(str(state), "yellow")
+    console.print(
+        f"[{color}]Client config posture: {state}[/{color}] "
+        f"({status.get('client')} at {path})"
+    )
+    unmanaged = status.get("unmanaged_servers")
+    if isinstance(unmanaged, list) and unmanaged:
+        console.print(
+            "[yellow]Unmanaged MCP servers:[/yellow] "
+            f"{', '.join(map(str, unmanaged))}"
+        )
+    legacy = status.get("legacy_runner_servers")
+    if isinstance(legacy, list) and legacy:
+        console.print(
+            "[yellow]Legacy LightNow runner entries:[/yellow] "
+            f"{', '.join(map(str, legacy))}"
+        )
+    warnings = status.get("warnings")
+    if isinstance(warnings, list) and warnings:
+        console.print(f"[yellow]Warnings:[/yellow] {', '.join(map(str, warnings))}")
 
 
 def patch_config(

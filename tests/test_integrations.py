@@ -19,6 +19,8 @@ from lightnow_cli.commands.integrations import (
     BEGIN,
     END,
     JSON_MANIFEST_SUFFIX,
+    analyze_client_config_content,
+    analyze_client_config_file,
     build_local_proxy_config,
     build_local_proxy_export,
     build_runner_export,
@@ -492,6 +494,154 @@ def test_default_local_proxy_config_path_is_client_specific() -> None:
     )
 
 
+def test_analyzes_managed_codex_local_proxy_config() -> None:
+    """Posture scanner recognizes a clean Local Proxy config."""
+    status = analyze_client_config_content(
+        client="codex",
+        export_format="toml",
+        content=render_local_proxy_codex_toml("http://127.0.0.1:8080/mcp"),
+        expected_proxy_config_path=Path("/tmp/lightnow/codex.yaml"),
+    )
+
+    assert status["status"] == "managed"
+    assert status["local_proxy_present"] is True
+    assert status["unmanaged_servers"] == []
+
+
+def test_analyzes_mixed_json_config_with_unmanaged_servers() -> None:
+    """Posture scanner reports bypassable client config entries."""
+    content = json.dumps(
+        {
+            "mcpServers": {
+                "LightNow": {
+                    "command": "mcp-proxy",
+                    "args": [
+                        "--config",
+                        "/tmp/lightnow/claude.yaml",
+                        "--transport",
+                        "stdio",
+                    ],
+                },
+                "github": {"command": "docker", "args": ["run", "github"]},
+                "legacy": {
+                    "command": "lightnow",
+                    "args": ["run", "--server", "legacy"],
+                },
+            }
+        }
+    )
+
+    status = analyze_client_config_content(
+        client="claude-desktop",
+        export_format="json",
+        content=content,
+        expected_proxy_config_path=Path("/tmp/lightnow/claude.yaml"),
+    )
+
+    assert status["status"] == "mixed"
+    assert status["local_proxy_aliases"] == ["LightNow"]
+    assert status["unmanaged_servers"] == ["github"]
+    assert status["legacy_runner_servers"] == ["legacy"]
+
+
+def test_config_status_command_prints_machine_readable_posture() -> None:
+    """Enterprise rollout can inspect configs without modifying them."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "mcp.json"
+        target.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "LightNow": {
+                            "command": "mcp-proxy",
+                            "args": [
+                                "--config",
+                                f"{tmp}/proxy.yaml",
+                                "--transport",
+                                "stdio",
+                            ],
+                        }
+                    }
+                }
+            )
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "config-status",
+                "--client",
+                "claude-desktop",
+                "--config-path",
+                str(target),
+                "--local-proxy-config-path",
+                f"{tmp}/proxy.yaml",
+                "--json",
+            ],
+        )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "managed"
+    assert payload["local_proxy_present"] is True
+
+
+def test_analyze_config_file_reports_missing_config() -> None:
+    """Missing configs are explicit posture states, not silent success."""
+    status = analyze_client_config_file(
+        client="codex",
+        export_format="toml",
+        path=Path("/tmp/definitely-not-lightnow-config.toml"),
+        expected_proxy_config_path=Path("/tmp/lightnow/codex.yaml"),
+    )
+
+    assert status["status"] == "missing"
+    assert status["warnings"] == ["config_missing"]
+
+
+def test_analyzes_invalid_config_without_raising() -> None:
+    """Invalid client config is reported as posture state."""
+    status = analyze_client_config_content(
+        client="claude-desktop",
+        export_format="json",
+        content="{not json",
+        expected_proxy_config_path=Path("/tmp/lightnow/claude.yaml"),
+    )
+
+    assert status["status"] == "invalid"
+    assert status["local_proxy_present"] is False
+    assert status["warnings"][0].startswith("invalid_json")
+
+
+def test_analyzes_proxy_config_path_mismatch() -> None:
+    """Posture scanner detects stale LightNow proxy config paths."""
+    content = json.dumps(
+        {
+            "mcpServers": {
+                "LightNow": {
+                    "command": "/usr/local/bin/mcp-proxy",
+                    "args": [
+                        "--config",
+                        "/tmp/lightnow/old.yaml",
+                        "--transport",
+                        "stdio",
+                    ],
+                }
+            }
+        }
+    )
+    status = analyze_client_config_content(
+        client="claude-desktop",
+        export_format="json",
+        content=content,
+        expected_proxy_config_path=Path("/tmp/lightnow/current.yaml"),
+    )
+
+    assert status["status"] == "managed"
+    assert status["warnings"] == ["proxy_config_path_mismatch"]
+
+
 def test_local_proxy_export_rejects_non_local_urls() -> None:
     """Local Proxy Mode must not silently configure a hosted endpoint."""
     for url in [
@@ -933,7 +1083,7 @@ def test_sync_local_proxy_replaces_existing_codex_mcp_servers() -> None:
         "client_name": "codex",
         "client_version": None,
         "runner_name": "lightnow-local-proxy",
-        "runner_version": "0.1.0",
+        "runner_version": "0.1.2",
         "client_transport": "stdio",
     }
     assert proxy_payload["registry_api"]["use_cli_session"] is True
@@ -1136,6 +1286,21 @@ def test_build_local_proxy_config_can_pin_tenant_context() -> None:
         == "https://registry-api.lightnow.local/v0.1"
     )
     assert payload["registry_api"]["cli_tenant_id"] == "tenant-uuid"
+
+
+def test_build_local_proxy_config_marks_http_client_transport() -> None:
+    """HTTP Local Proxy sync records Streamable HTTP client transport."""
+    generated = build_local_proxy_config(
+        local_proxy_url="http://127.0.0.1:9191/mcp",
+        local_proxy_transport="http",
+        profile="default",
+        registry_api_url="https://registry-api.lightnow.local/v0.1",
+        tenant=None,
+    )
+
+    payload = yaml.safe_load(generated)
+
+    assert payload["local_proxy"]["client_transport"] == "streamable-http"
 
 
 def test_build_local_proxy_config_can_include_registry_ca_file() -> None:

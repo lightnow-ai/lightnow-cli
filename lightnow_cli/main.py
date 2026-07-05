@@ -27,6 +27,7 @@ app.command("info")(query.server_info)
 app.command("validate")(validate.validate)
 app.command("import-config")(integrations.import_config)
 app.command("sync")(integrations.sync)
+app.command("config-status")(integrations.config_status)
 app.command("run")(runner.run)
 
 

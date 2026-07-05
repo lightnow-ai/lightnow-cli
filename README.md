@@ -108,6 +108,19 @@ Note: Google has moved individual Gemini CLI users to Antigravity. LightNow
 keeps `gemini-cli` support for Enterprise/API-key environments, but
 `antigravity` is the recommended Google local client target for individuals.
 
+Check whether a client is still in the expected Local Proxy posture:
+
+```bash
+lightnow config-status --client codex
+lightnow config-status --client antigravity --json
+```
+
+This reports whether the LightNow proxy entry is present, whether unmanaged MCP
+servers are still configured next to it, and whether an older per-server runner
+wrapper is still in use. The status output is redacted and intended for the
+LightNow UI, installers and enterprise rollout checks as well as local
+troubleshooting.
+
 ## Run One Server
 
 Run a configured MCP server through LightNow:

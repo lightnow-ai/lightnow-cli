@@ -102,6 +102,7 @@ def test_login_help_is_customer_friendly(runner):
         "validate",
         "import-config",
         "sync",
+        "config-status",
         "run",
     ],
 )
