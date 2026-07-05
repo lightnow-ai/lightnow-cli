@@ -95,6 +95,8 @@ DEFAULT_LOCAL_PROXY_CONFIG_DIR = Path.home() / ".lightnow" / "mcp-proxy"
 LOCAL_LIGHTNOW_CA_RELATIVE_PATH = Path(".local-runtime/certs/lightnow-local-ca.crt")
 LIGHTNOW_PROXY_ALIASES = {"lightnow", "LightNow"}
 LOCAL_PROXY_RUNNER_VERSION = "0.1.2"
+VSCODE_VIRTUAL_TOOLS_THRESHOLD_SETTING = "github.copilot.chat.virtualTools.threshold"
+VSCODE_VIRTUAL_TOOLS_THRESHOLD = 128
 
 
 def default_local_proxy_config_path(client: str) -> Path:
@@ -376,6 +378,8 @@ def sync(
     secure_write_text(target, patched, executable=export_format == "shell")
     if export_format == "json":
         write_json_manifest(manifest, extract_json_managed(generated))
+    if local_proxy and client == "vscode" and not dry_run:
+        configure_vscode_virtual_tools(target.with_name("settings.json"))
 
     console.print(f"[green]Synced {client} profile {profile} to {target}[/green]")
     if local_proxy:
@@ -1344,6 +1348,22 @@ def prepare_json_local_proxy_config(existing: str) -> str:
     current.pop("mcpServers", None)
     current.pop("servers", None)
     return json.dumps(current, indent=2, ensure_ascii=False) + "\n"
+
+
+def configure_vscode_virtual_tools(settings_path: Path) -> None:
+    """Enable VS Code's virtual tools mode for large MCP tool sets."""
+    existing = settings_path.read_text() if settings_path.exists() else ""
+    settings = json.loads(existing) if existing.strip() else {}
+    if not isinstance(settings, dict):
+        raise ValueError("VS Code settings must be a JSON object.")
+    current_value = settings.get(VSCODE_VIRTUAL_TOOLS_THRESHOLD_SETTING)
+    if current_value == VSCODE_VIRTUAL_TOOLS_THRESHOLD:
+        return
+    settings[VSCODE_VIRTUAL_TOOLS_THRESHOLD_SETTING] = VSCODE_VIRTUAL_TOOLS_THRESHOLD
+    secure_write_text(
+        settings_path,
+        json.dumps(settings, indent=2, ensure_ascii=False) + "\n",
+    )
 
 
 def remove_managed_block(existing: str) -> str:

@@ -24,6 +24,7 @@ from lightnow_cli.commands.integrations import (
     build_local_proxy_config,
     build_local_proxy_export,
     build_runner_export,
+    configure_vscode_virtual_tools,
     default_local_proxy_config_path,
     discover_local_lightnow_ca_file,
     extract_json_managed,
@@ -1333,7 +1334,9 @@ def test_sync_local_proxy_replaces_existing_vscode_mcp_servers() -> None:
     runner = CliRunner()
     with tempfile.TemporaryDirectory() as tmp:
         target = Path(tmp) / "mcp.json"
+        settings = Path(tmp) / "settings.json"
         proxy_config = Path(tmp) / "vscode.yaml"
+        settings.write_text(json.dumps({"editor.fontSize": 14}))
         target.write_text(
             json.dumps(
                 {
@@ -1372,6 +1375,7 @@ def test_sync_local_proxy_replaces_existing_vscode_mcp_servers() -> None:
             patched = json.loads(target.read_text())
             patched_text = target.read_text()
             proxy_payload = yaml.safe_load(proxy_config.read_text())
+            settings_payload = json.loads(settings.read_text())
 
     assert result.exit_code == 0
     assert patched["inputs"] == [{"id": "user-input", "type": "promptString"}]
@@ -1388,6 +1392,18 @@ def test_sync_local_proxy_replaces_existing_vscode_mcp_servers() -> None:
     assert "secret" not in patched_text
     assert proxy_payload["local_proxy"]["client_name"] == "vscode"
     assert proxy_payload["local_proxy"]["client_transport"] == "stdio"
+    assert settings_payload["editor.fontSize"] == 14
+    assert settings_payload["github.copilot.chat.virtualTools.threshold"] == 128
+
+
+def test_configure_vscode_virtual_tools_creates_settings() -> None:
+    """VS Code virtual tools can be enabled when no settings file exists yet."""
+    with tempfile.TemporaryDirectory() as tmp:
+        settings = Path(tmp) / "settings.json"
+        configure_vscode_virtual_tools(settings)
+        payload = json.loads(settings.read_text())
+
+    assert payload == {"github.copilot.chat.virtualTools.threshold": 128}
 
 
 def test_sync_from_settings_uses_local_proxy_policy() -> None:
