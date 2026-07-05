@@ -22,6 +22,7 @@ from lightnow_cli.commands.integrations import (
     build_local_proxy_config,
     build_local_proxy_export,
     build_runner_export,
+    default_local_proxy_config_path,
     extract_json_managed,
     fetch_export,
     import_profile_config,
@@ -457,6 +458,17 @@ def test_local_proxy_export_for_gemini_cli_writes_one_stdio_server() -> None:
         "--transport",
         "stdio",
     ]
+
+
+def test_default_local_proxy_config_path_is_client_specific() -> None:
+    """Local Proxy configs are isolated per MCP client."""
+    assert (
+        default_local_proxy_config_path("claude-desktop").name == "claude-desktop.yaml"
+    )
+    assert default_local_proxy_config_path("gemini-cli").name == "gemini-cli.yaml"
+    assert (
+        default_local_proxy_config_path("Claude Desktop").name == "Claude-Desktop.yaml"
+    )
 
 
 def test_local_proxy_export_rejects_non_local_urls() -> None:
@@ -975,9 +987,15 @@ def test_sync_local_proxy_replaces_existing_gemini_cli_mcp_servers() -> None:
                 }
             )
         )
-        with patch(
-            "lightnow_cli.commands.integrations.require_access_token",
-            return_value="token",
+        with (
+            patch(
+                "lightnow_cli.commands.integrations.require_access_token",
+                return_value="token",
+            ),
+            patch(
+                "lightnow_cli.commands.integrations.default_local_proxy_config_path",
+                return_value=proxy_config,
+            ),
         ):
             result = runner.invoke(
                 app,
@@ -986,8 +1004,6 @@ def test_sync_local_proxy_replaces_existing_gemini_cli_mcp_servers() -> None:
                     "--client",
                     "gemini-cli",
                     "--local-proxy",
-                    "--local-proxy-config-path",
-                    str(proxy_config),
                     "--config-path",
                     str(target),
                 ],

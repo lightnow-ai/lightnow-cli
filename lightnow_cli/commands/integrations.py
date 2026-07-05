@@ -59,7 +59,13 @@ CLIENT_DEFAULTS: dict[str, tuple[str, Path]] = {
 
 CLIENTS = sorted(CLIENT_DEFAULTS)
 SECRET_MODES = ["placeholder", "plaintext"]
-DEFAULT_LOCAL_PROXY_CONFIG_PATH = Path.home() / ".lightnow" / "mcp-proxy.yaml"
+DEFAULT_LOCAL_PROXY_CONFIG_DIR = Path.home() / ".lightnow" / "mcp-proxy"
+
+
+def default_local_proxy_config_path(client: str) -> Path:
+    """Return the per-client Local Proxy config path used by sync."""
+    safe_client = re.sub(r"[^A-Za-z0-9_.-]+", "-", client).strip("-") or "client"
+    return DEFAULT_LOCAL_PROXY_CONFIG_DIR / f"{safe_client}.yaml"
 
 
 @app.command("sync")
@@ -174,7 +180,7 @@ def sync(
         )
     assert registry_api_url is not None
     proxy_target = (
-        local_proxy_config_path or DEFAULT_LOCAL_PROXY_CONFIG_PATH
+        local_proxy_config_path or default_local_proxy_config_path(client)
     ).expanduser()
 
     try:
@@ -371,14 +377,14 @@ def build_local_proxy_export(
     if local_proxy_transport == "stdio":
         if client in {"claude-desktop", "gemini-cli"} and export_format == "json":
             return render_local_proxy_mcp_servers_json(
-                local_proxy_config_path or DEFAULT_LOCAL_PROXY_CONFIG_PATH
+                local_proxy_config_path or default_local_proxy_config_path(client)
             )
         if client != "codex" or export_format != "toml":
             raise ValueError(
                 "Local Proxy Mode stdio currently supports Codex TOML, Claude Desktop JSON, and Gemini CLI JSON only."
             )
         return render_local_proxy_codex_stdio_toml(
-            local_proxy_config_path or DEFAULT_LOCAL_PROXY_CONFIG_PATH
+            local_proxy_config_path or default_local_proxy_config_path(client)
         )
     if local_proxy_transport != "http":
         raise ValueError("Local Proxy transport must be stdio or http.")
