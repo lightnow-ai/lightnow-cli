@@ -89,11 +89,13 @@ lightnow sync --client codex --local-proxy
 ```
 
 The same Local Proxy mode is available for local clients with JSON MCP config
-files, including Claude Desktop and Google Antigravity:
+files, including Claude Desktop, Google Antigravity, Cursor, and VS Code:
 
 ```bash
 lightnow sync --client claude-desktop --local-proxy
 lightnow sync --client antigravity --local-proxy
+lightnow sync --client cursor --local-proxy
+lightnow sync --client vscode --local-proxy
 ```
 
 For UI-led rollouts, let the CLI read the desired Config policy from LightNow
@@ -120,6 +122,8 @@ Check whether a client is still in the expected Local Proxy posture:
 ```bash
 lightnow config-status --client codex
 lightnow config-status --client antigravity --json
+lightnow config-status --client cursor --json
+lightnow config-status --client vscode --json
 ```
 
 This reports whether the LightNow proxy entry is present, whether unmanaged MCP

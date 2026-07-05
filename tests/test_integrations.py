@@ -669,14 +669,14 @@ def test_local_proxy_export_rejects_unsupported_clients() -> None:
     """Local Proxy Mode rejects clients without an explicit config writer."""
     try:
         build_local_proxy_export(
-            client="cursor",
-            export_format="json",
+            client="continue",
+            export_format="yaml",
             local_proxy_url="http://127.0.0.1:8080/mcp",
         )
     except ValueError as exc:
         assert (
-            "Codex TOML, Antigravity JSON, Claude Desktop JSON, and Gemini CLI JSON"
-            in str(exc)
+            "Codex TOML, Antigravity JSON, Claude Desktop JSON, Cursor JSON, "
+            "Gemini CLI JSON, and VS Code JSON" in str(exc)
         )
     else:
         raise AssertionError("expected ValueError")
@@ -1265,6 +1265,127 @@ def test_sync_local_proxy_replaces_existing_gemini_cli_mcp_servers() -> None:
     ]
     assert "secret" not in patched_text
     assert proxy_payload["local_proxy"]["client_name"] == "gemini-cli"
+    assert proxy_payload["local_proxy"]["client_transport"] == "stdio"
+
+
+def test_sync_local_proxy_replaces_existing_cursor_mcp_servers() -> None:
+    """Cursor Local Proxy sync leaves one LightNow mcpServers entry."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "mcp.json"
+        proxy_config = Path(tmp) / "cursor.yaml"
+        target.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "github": {
+                            "command": "docker",
+                            "env": {"GITHUB_TOKEN": "secret"},
+                        }
+                    },
+                    "preferences": {"tools": "enabled"},
+                }
+            )
+        )
+        with (
+            patch(
+                "lightnow_cli.commands.integrations.require_access_token",
+                return_value="token",
+            ),
+            patch(
+                "lightnow_cli.commands.integrations.default_local_proxy_config_path",
+                return_value=proxy_config,
+            ),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "sync",
+                    "--client",
+                    "cursor",
+                    "--local-proxy",
+                    "--config-path",
+                    str(target),
+                ],
+            )
+            patched = json.loads(target.read_text())
+            patched_text = target.read_text()
+            proxy_payload = yaml.safe_load(proxy_config.read_text())
+
+    assert result.exit_code == 0
+    assert patched["preferences"] == {"tools": "enabled"}
+    assert list(patched["mcpServers"]) == ["LightNow"]
+    assert patched["mcpServers"]["LightNow"]["command"].endswith("mcp-proxy")
+    assert patched["mcpServers"]["LightNow"]["args"] == [
+        "--config",
+        str(proxy_config),
+        "--transport",
+        "stdio",
+    ]
+    assert "secret" not in patched_text
+    assert proxy_payload["local_proxy"]["client_name"] == "cursor"
+    assert proxy_payload["local_proxy"]["client_transport"] == "stdio"
+
+
+def test_sync_local_proxy_replaces_existing_vscode_mcp_servers() -> None:
+    """VS Code Local Proxy sync leaves one LightNow servers entry."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "mcp.json"
+        proxy_config = Path(tmp) / "vscode.yaml"
+        target.write_text(
+            json.dumps(
+                {
+                    "servers": {
+                        "github": {
+                            "type": "stdio",
+                            "command": "docker",
+                            "env": {"GITHUB_TOKEN": "secret"},
+                        }
+                    },
+                    "inputs": [{"id": "user-input", "type": "promptString"}],
+                }
+            )
+        )
+        with (
+            patch(
+                "lightnow_cli.commands.integrations.require_access_token",
+                return_value="token",
+            ),
+            patch(
+                "lightnow_cli.commands.integrations.default_local_proxy_config_path",
+                return_value=proxy_config,
+            ),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "sync",
+                    "--client",
+                    "vscode",
+                    "--local-proxy",
+                    "--config-path",
+                    str(target),
+                ],
+            )
+            patched = json.loads(target.read_text())
+            patched_text = target.read_text()
+            proxy_payload = yaml.safe_load(proxy_config.read_text())
+
+    assert result.exit_code == 0
+    assert patched["inputs"] == [{"id": "user-input", "type": "promptString"}]
+    assert list(patched["servers"]) == ["LightNow"]
+    assert patched["servers"]["LightNow"]["type"] == "stdio"
+    assert patched["servers"]["LightNow"]["command"].endswith("mcp-proxy")
+    assert patched["servers"]["LightNow"]["args"] == [
+        "--config",
+        str(proxy_config),
+        "--transport",
+        "stdio",
+    ]
+    assert "mcpServers" not in patched
+    assert "secret" not in patched_text
+    assert proxy_payload["local_proxy"]["client_name"] == "vscode"
     assert proxy_payload["local_proxy"]["client_transport"] == "stdio"
 
 

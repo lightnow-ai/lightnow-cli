@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import tempfile
 import tomllib
 from pathlib import Path
@@ -38,6 +39,25 @@ BEGIN = "# >>> LightNow managed integrations >>>"
 END = "# <<< LightNow managed integrations <<<"
 JSON_MANIFEST_SUFFIX = ".lightnow-managed.json"
 
+
+def default_vscode_mcp_path() -> Path:
+    """Return VS Code's user-level MCP config path for the current platform."""
+    if sys.platform == "darwin":
+        return (
+            Path.home()
+            / "Library"
+            / "Application Support"
+            / "Code"
+            / "User"
+            / "mcp.json"
+        )
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            return Path(appdata) / "Code" / "User" / "mcp.json"
+    return Path.home() / ".config" / "Code" / "User" / "mcp.json"
+
+
 CLIENT_DEFAULTS: dict[str, tuple[str, Path]] = {
     "antigravity": ("json", Path.home() / ".gemini" / "config" / "mcp_config.json"),
     "codex": ("toml", Path.home() / ".codex" / "config.toml"),
@@ -55,13 +75,22 @@ CLIENT_DEFAULTS: dict[str, tuple[str, Path]] = {
     "continue": ("yaml", Path.home() / ".continue" / "config.yaml"),
     "gemini-cli": ("json", Path.home() / ".gemini" / "settings.json"),
     "librechat": ("yaml", Path.cwd() / "librechat.yaml"),
-    "vscode": ("json", Path.cwd() / ".vscode" / "mcp.json"),
+    "vscode": ("json", default_vscode_mcp_path()),
     "mcp-inspector": ("shell", Path.cwd() / "lightnow-mcp-inspector.sh"),
 }
 
 CLIENTS = sorted(CLIENT_DEFAULTS)
 SECRET_MODES = ["placeholder", "plaintext"]
-LOCAL_PROXY_JSON_CLIENTS = {"antigravity", "claude-desktop", "gemini-cli"}
+LOCAL_PROXY_MCP_SERVERS_JSON_CLIENTS = {
+    "antigravity",
+    "claude-desktop",
+    "cursor",
+    "gemini-cli",
+}
+LOCAL_PROXY_VSCODE_JSON_CLIENTS = {"vscode"}
+LOCAL_PROXY_JSON_CLIENTS = (
+    LOCAL_PROXY_MCP_SERVERS_JSON_CLIENTS | LOCAL_PROXY_VSCODE_JSON_CLIENTS
+)
 DEFAULT_LOCAL_PROXY_CONFIG_DIR = Path.home() / ".lightnow" / "mcp-proxy"
 LIGHTNOW_PROXY_ALIASES = {"lightnow", "LightNow"}
 LOCAL_PROXY_RUNNER_VERSION = "0.1.2"
@@ -242,7 +271,9 @@ def sync(
                 registry_api_url=registry_api_url,
                 tenant=effective_tenant,
                 registry_ca_file=registry_ca_file,
-                local_proxy_settings=settings_local_proxy_summary if from_settings else None,
+                local_proxy_settings=(
+                    settings_local_proxy_summary if from_settings else None
+                ),
             )
         elif runner:
             profile_payload = fetch_profile_servers(
@@ -479,14 +510,19 @@ def build_local_proxy_export(
 ) -> str:
     """Build one client config entry that points at the LightNow Local Proxy."""
     if local_proxy_transport == "stdio":
-        if client in LOCAL_PROXY_JSON_CLIENTS and export_format == "json":
+        if client in LOCAL_PROXY_MCP_SERVERS_JSON_CLIENTS and export_format == "json":
             return render_local_proxy_mcp_servers_json(
+                local_proxy_config_path or default_local_proxy_config_path(client)
+            )
+        if client in LOCAL_PROXY_VSCODE_JSON_CLIENTS and export_format == "json":
+            return render_local_proxy_vscode_json(
                 local_proxy_config_path or default_local_proxy_config_path(client)
             )
         if client != "codex" or export_format != "toml":
             raise ValueError(
                 "Local Proxy Mode stdio currently supports Codex TOML, "
-                "Antigravity JSON, Claude Desktop JSON, and Gemini CLI JSON only."
+                "Antigravity JSON, Claude Desktop JSON, Cursor JSON, "
+                "Gemini CLI JSON, and VS Code JSON only."
             )
         return render_local_proxy_codex_stdio_toml(
             local_proxy_config_path or default_local_proxy_config_path(client)
@@ -553,6 +589,25 @@ def render_local_proxy_mcp_servers_json(local_proxy_config_path: Path) -> str:
     return json.dumps(payload, indent=2) + "\n"
 
 
+def render_local_proxy_vscode_json(local_proxy_config_path: Path) -> str:
+    """Render VS Code MCP config that starts the local LightNow MCP proxy."""
+    payload = {
+        "servers": {
+            "LightNow": {
+                "type": "stdio",
+                "command": local_proxy_command(),
+                "args": [
+                    "--config",
+                    str(local_proxy_config_path.expanduser()),
+                    "--transport",
+                    "stdio",
+                ],
+            }
+        }
+    }
+    return json.dumps(payload, indent=2) + "\n"
+
+
 def render_local_proxy_codex_toml(local_proxy_url: str) -> str:
     """Render Codex TOML for one local LightNow MCP server."""
     return (
@@ -606,9 +661,9 @@ def build_local_proxy_config(
         "client_version": None,
         "runner_name": "lightnow-local-proxy",
         "runner_version": LOCAL_PROXY_RUNNER_VERSION,
-        "client_transport": "streamable-http"
-        if local_proxy_transport == "http"
-        else "stdio",
+        "client_transport": (
+            "streamable-http" if local_proxy_transport == "http" else "stdio"
+        ),
     }
     if isinstance(local_proxy_settings, dict):
         local_proxy_config["telemetry_enabled"] = (
@@ -1077,9 +1132,12 @@ def analyze_client_config_content(
     proxy_config_path = str(expected_proxy_config_path.expanduser())
     warnings: list[str] = []
     for alias, entry in entries.items():
-        command = entry.get("command") if isinstance(entry.get("command"), str) else ""
-        args = entry.get("args") if isinstance(entry.get("args"), list) else []
-        url = entry.get("url") if isinstance(entry.get("url"), str) else ""
+        raw_command = entry.get("command")
+        command: str = raw_command if isinstance(raw_command, str) else ""
+        raw_args = entry.get("args")
+        args: list[Any] = raw_args if isinstance(raw_args, list) else []
+        raw_url = entry.get("url")
+        url: str = raw_url if isinstance(raw_url, str) else ""
         is_proxy_alias = alias in LIGHTNOW_PROXY_ALIASES
         is_mcp_proxy = command_looks_like(
             command,
