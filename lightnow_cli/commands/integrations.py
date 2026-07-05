@@ -227,6 +227,8 @@ def sync(
         )
         if local_proxy and client == "codex" and export_format == "toml":
             existing = prepare_codex_local_proxy_config(existing)
+        if local_proxy and client == "claude-desktop" and export_format == "json":
+            existing = prepare_json_local_proxy_config(existing)
         patched = patch_config(
             existing,
             generated,
@@ -362,14 +364,22 @@ def build_local_proxy_export(
     local_proxy_config_path: Optional[Path] = None,
 ) -> str:
     """Build one client config entry that points at the LightNow Local Proxy."""
-    if client != "codex" or export_format != "toml":
-        raise ValueError("Local Proxy Mode currently supports Codex TOML only.")
     if local_proxy_transport == "stdio":
+        if client in {"claude-desktop"} and export_format == "json":
+            return render_local_proxy_mcp_servers_json(
+                local_proxy_config_path or DEFAULT_LOCAL_PROXY_CONFIG_PATH
+            )
+        if client != "codex" or export_format != "toml":
+            raise ValueError(
+                "Local Proxy Mode stdio currently supports Codex TOML and Claude Desktop JSON only."
+            )
         return render_local_proxy_codex_stdio_toml(
             local_proxy_config_path or DEFAULT_LOCAL_PROXY_CONFIG_PATH
         )
     if local_proxy_transport != "http":
         raise ValueError("Local Proxy transport must be stdio or http.")
+    if client != "codex" or export_format != "toml":
+        raise ValueError("Local Proxy Mode HTTP currently supports Codex TOML only.")
     parsed = urlparse(local_proxy_url)
     try:
         port = parsed.port
@@ -382,6 +392,12 @@ def build_local_proxy_export(
     ):
         raise ValueError("Local Proxy URL must point to localhost.")
     return render_local_proxy_codex_toml(local_proxy_url)
+
+
+def local_proxy_command() -> str:
+    """Return the command path most likely to work from desktop MCP clients."""
+    resolved = shutil.which("mcp-proxy")
+    return resolved or "mcp-proxy"
 
 
 def render_local_proxy_codex_stdio_toml(local_proxy_config_path: Path) -> str:
@@ -402,6 +418,24 @@ def render_local_proxy_codex_stdio_toml(local_proxy_config_path: Path) -> str:
         + "\n"
         'default_tools_approval_mode = "approve"\n'
     )
+
+
+def render_local_proxy_mcp_servers_json(local_proxy_config_path: Path) -> str:
+    """Render JSON mcpServers config that starts the local LightNow MCP proxy."""
+    payload = {
+        "mcpServers": {
+            "lightnow": {
+                "command": local_proxy_command(),
+                "args": [
+                    "--config",
+                    str(local_proxy_config_path.expanduser()),
+                    "--transport",
+                    "stdio",
+                ],
+            }
+        }
+    }
+    return json.dumps(payload, indent=2) + "\n"
 
 
 def render_local_proxy_codex_toml(local_proxy_url: str) -> str:
@@ -841,6 +875,18 @@ def prepare_codex_local_proxy_config(existing: str) -> str:
     """Remove direct Codex MCP server entries before writing Local Proxy Mode."""
     without_managed = remove_managed_block(existing)
     return strip_codex_mcp_server_tables(without_managed)
+
+
+def prepare_json_local_proxy_config(existing: str) -> str:
+    """Remove direct JSON MCP server entries before writing Local Proxy Mode."""
+    if not existing.strip():
+        return existing
+    current = json.loads(existing)
+    if not isinstance(current, dict):
+        raise ValueError("LightNow can only sync JSON object client configs.")
+    current.pop("mcpServers", None)
+    current.pop("servers", None)
+    return json.dumps(current, indent=2, ensure_ascii=False) + "\n"
 
 
 def remove_managed_block(existing: str) -> str:

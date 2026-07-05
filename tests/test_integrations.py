@@ -27,6 +27,7 @@ from lightnow_cli.commands.integrations import (
     import_profile_config,
     patch_config,
     prepare_codex_local_proxy_config,
+    prepare_json_local_proxy_config,
     print_import_summary,
     redact,
     render_local_proxy_codex_toml,
@@ -418,6 +419,26 @@ def test_local_proxy_export_for_codex_can_write_http_server() -> None:
     assert "command" not in generated
 
 
+def test_local_proxy_export_for_claude_desktop_writes_one_stdio_server() -> None:
+    """Local Proxy Mode writes one Claude Desktop entry that auto-starts the proxy."""
+    generated = build_local_proxy_export(
+        client="claude-desktop",
+        export_format="json",
+        local_proxy_url="http://127.0.0.1:8080/mcp",
+        local_proxy_config_path=Path("/tmp/lightnow/mcp-proxy.yaml"),
+    )
+    payload = json.loads(generated)
+
+    assert list(payload["mcpServers"]) == ["lightnow"]
+    assert payload["mcpServers"]["lightnow"]["command"].endswith("mcp-proxy")
+    assert payload["mcpServers"]["lightnow"]["args"] == [
+        "--config",
+        "/tmp/lightnow/mcp-proxy.yaml",
+        "--transport",
+        "stdio",
+    ]
+
+
 def test_local_proxy_export_rejects_non_local_urls() -> None:
     """Local Proxy Mode must not silently configure a hosted endpoint."""
     for url in [
@@ -441,7 +462,7 @@ def test_local_proxy_export_rejects_non_local_urls() -> None:
 
 
 def test_local_proxy_export_rejects_unsupported_clients() -> None:
-    """The first Local Proxy config writer is intentionally Codex-only."""
+    """Local Proxy Mode rejects clients without an explicit config writer."""
     try:
         build_local_proxy_export(
             client="cursor",
@@ -449,7 +470,7 @@ def test_local_proxy_export_rejects_unsupported_clients() -> None:
             local_proxy_url="http://127.0.0.1:8080/mcp",
         )
     except ValueError as exc:
-        assert "Codex TOML" in str(exc)
+        assert "Codex TOML and Claude Desktop JSON" in str(exc)
     else:
         raise AssertionError("expected ValueError")
 
@@ -768,6 +789,27 @@ model = "gpt-5"
     assert "GITHUB_TOKEN" not in prepared
 
 
+def test_prepare_json_local_proxy_config_removes_direct_mcp_servers() -> None:
+    """Local Proxy Mode removes existing JSON MCP servers while keeping app config."""
+    existing = json.dumps(
+        {
+            "preferences": {"theme": "dark"},
+            "mcpServers": {
+                "github": {
+                    "command": "docker",
+                    "env": {"GITHUB_TOKEN": "secret"},
+                }
+            },
+        }
+    )
+
+    prepared = prepare_json_local_proxy_config(existing)
+    payload = json.loads(prepared)
+
+    assert payload == {"preferences": {"theme": "dark"}}
+    assert "secret" not in prepared
+
+
 def test_sync_local_proxy_replaces_existing_codex_mcp_servers() -> None:
     """Local Proxy sync preserves user Codex config and leaves only one MCP server."""
     runner = CliRunner()
@@ -836,6 +878,61 @@ def test_sync_local_proxy_replaces_existing_codex_mcp_servers() -> None:
     assert proxy_payload["registry_api"]["include_secrets"] is True
     assert proxy_payload["profiles"] == {"default": {}}
     assert proxy_payload["upstreams"] == {}
+
+
+def test_sync_local_proxy_replaces_existing_claude_desktop_mcp_servers() -> None:
+    """Claude Desktop Local Proxy sync leaves one LightNow MCP server entry."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "claude_desktop_config.json"
+        proxy_config = Path(tmp) / "mcp-proxy.yaml"
+        target.write_text(
+            json.dumps(
+                {
+                    "preferences": {"remoteToolsDeviceName": "mars"},
+                    "mcpServers": {
+                        "github": {
+                            "command": "docker",
+                            "env": {"GITHUB_TOKEN": "secret"},
+                        }
+                    },
+                }
+            )
+        )
+        with patch(
+            "lightnow_cli.commands.integrations.require_access_token",
+            return_value="token",
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "sync",
+                    "--client",
+                    "claude-desktop",
+                    "--local-proxy",
+                    "--local-proxy-config-path",
+                    str(proxy_config),
+                    "--config-path",
+                    str(target),
+                ],
+            )
+            patched = json.loads(target.read_text())
+            patched_text = target.read_text()
+            proxy_payload = yaml.safe_load(proxy_config.read_text())
+
+    assert result.exit_code == 0
+    assert patched["preferences"] == {"remoteToolsDeviceName": "mars"}
+    assert list(patched["mcpServers"]) == ["lightnow"]
+    assert patched["mcpServers"]["lightnow"]["command"].endswith("mcp-proxy")
+    assert patched["mcpServers"]["lightnow"]["args"] == [
+        "--config",
+        str(proxy_config),
+        "--transport",
+        "stdio",
+    ]
+    assert "secret" not in patched_text
+    assert proxy_payload["local_proxy"]["client_name"] == "claude-desktop"
+    assert proxy_payload["local_proxy"]["client_transport"] == "stdio"
 
 
 def test_build_local_proxy_config_can_pin_tenant_context() -> None:
