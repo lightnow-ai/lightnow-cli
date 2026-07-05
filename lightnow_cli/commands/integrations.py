@@ -424,7 +424,7 @@ def render_local_proxy_mcp_servers_json(local_proxy_config_path: Path) -> str:
     """Render JSON mcpServers config that starts the local LightNow MCP proxy."""
     payload = {
         "mcpServers": {
-            "lightnow": {
+            "LightNow": {
                 "command": local_proxy_command(),
                 "args": [
                     "--config",

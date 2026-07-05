@@ -429,9 +429,9 @@ def test_local_proxy_export_for_claude_desktop_writes_one_stdio_server() -> None
     )
     payload = json.loads(generated)
 
-    assert list(payload["mcpServers"]) == ["lightnow"]
-    assert payload["mcpServers"]["lightnow"]["command"].endswith("mcp-proxy")
-    assert payload["mcpServers"]["lightnow"]["args"] == [
+    assert list(payload["mcpServers"]) == ["LightNow"]
+    assert payload["mcpServers"]["LightNow"]["command"].endswith("mcp-proxy")
+    assert payload["mcpServers"]["LightNow"]["args"] == [
         "--config",
         "/tmp/lightnow/mcp-proxy.yaml",
         "--transport",
@@ -922,9 +922,9 @@ def test_sync_local_proxy_replaces_existing_claude_desktop_mcp_servers() -> None
 
     assert result.exit_code == 0
     assert patched["preferences"] == {"remoteToolsDeviceName": "mars"}
-    assert list(patched["mcpServers"]) == ["lightnow"]
-    assert patched["mcpServers"]["lightnow"]["command"].endswith("mcp-proxy")
-    assert patched["mcpServers"]["lightnow"]["args"] == [
+    assert list(patched["mcpServers"]) == ["LightNow"]
+    assert patched["mcpServers"]["LightNow"]["command"].endswith("mcp-proxy")
+    assert patched["mcpServers"]["LightNow"]["args"] == [
         "--config",
         str(proxy_config),
         "--transport",
