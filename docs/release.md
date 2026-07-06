@@ -22,7 +22,7 @@ Before publishing a release:
    ```bash
    make all
    ```
-4. Verify the GitHub Actions `CI` workflow is green on `master`.
+4. Verify the GitHub Actions `CI` workflow is green on `main`.
 5. Configure PyPI Trusted Publishing before the first PyPI release:
    - PyPI project name: `lightnow-cli`
    - Owner: `lightnow-ai`
@@ -38,6 +38,7 @@ Before publishing a release:
    - tests pass,
    - source distribution and wheel are built,
    - `twine check` passes,
+   - a GitHub Release is created with generated release notes and distribution artifacts,
    - PyPI publish succeeds through Trusted Publishing.
 
 Do not publish with long-lived local PyPI tokens.

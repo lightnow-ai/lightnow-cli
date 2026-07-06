@@ -22,6 +22,12 @@ Install the CLI with `pipx`:
 pipx install lightnow-cli
 ```
 
+Or install it with `uv`:
+
+```bash
+uv tool install lightnow-cli
+```
+
 If you prefer installing directly from the public repository:
 
 ```bash
@@ -70,8 +76,10 @@ runtime.
 Install the Local Proxy executable first:
 
 ```bash
-pipx install mcp-proxy
+pipx install lightnow-proxy
 ```
+
+The proxy package installs the `mcp-proxy` command used in MCP client configs.
 
 Then sync your client:
 
