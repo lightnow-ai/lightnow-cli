@@ -10,11 +10,18 @@ server configuration and secrets managed by LightNow.
 
 ## Install
 
-Requirements:
+Requirements for Python-based installs:
 
 - Python 3.11 or higher
 - `pipx`
 - a [LightNow account](https://www.lightnow.ai/)
+
+Install the CLI with Homebrew:
+
+```bash
+brew tap lightnow-ai/tap
+brew install lightnow-cli
+```
 
 Install the CLI with `pipx`:
 
@@ -77,6 +84,12 @@ Install the Local Proxy executable first:
 
 ```bash
 pipx install lightnow-proxy
+```
+
+Or with `uv`:
+
+```bash
+uv tool install lightnow-proxy
 ```
 
 The proxy package installs the `lightnow-proxy` command used in MCP client configs.
