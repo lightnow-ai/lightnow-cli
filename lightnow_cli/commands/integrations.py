@@ -102,7 +102,6 @@ LIGHTNOW_PROXY_ALIASES = {"lightnow", "LightNow"}
 CLIENT_INTERNAL_MCP_SERVERS = {
     "codex": {"node_repl"},
 }
-LOCAL_PROXY_RUNNER_VERSION = "0.1.2"
 VSCODE_VIRTUAL_TOOLS_THRESHOLD_SETTING = "github.copilot.chat.virtualTools.threshold"
 VSCODE_VIRTUAL_TOOLS_THRESHOLD = 128
 LOCAL_PROXY_STDIO_SUPPORT_MESSAGE = (
@@ -877,7 +876,6 @@ def build_local_proxy_config(
         "client_name": client,
         "client_version": None,
         "runner_name": "lightnow-local-proxy",
-        "runner_version": LOCAL_PROXY_RUNNER_VERSION,
         "client_transport": (
             "streamable-http" if local_proxy_transport == "http" else "stdio"
         ),
@@ -1419,7 +1417,10 @@ def augment_local_proxy_posture(status: dict[str, Any]) -> dict[str, Any]:
     """Add Local Proxy runtime checks (config file, lightnow-proxy binary) to a posture."""
     warnings = [str(item) for item in status.get("warnings", [])]
     expected_path = status.get("expected_proxy_config_path")
-    proxy_config_exists = bool(expected_path) and Path(str(expected_path)).exists()
+    proxy_config_path = Path(str(expected_path)).expanduser() if expected_path else None
+    proxy_config_exists = False
+    if proxy_config_path is not None:
+        proxy_config_exists = proxy_config_path.exists()
     proxy_commands = [
         str(item) for item in status.get("local_proxy_commands", []) if str(item)
     ]
@@ -1434,6 +1435,39 @@ def augment_local_proxy_posture(status: dict[str, Any]) -> dict[str, Any]:
     if status.get("local_proxy_present"):
         if not proxy_config_exists:
             warnings.append("proxy_config_missing")
+        elif proxy_config_path is not None:
+            try:
+                raw_proxy_config = yaml.safe_load(proxy_config_path.read_text()) or {}
+            except yaml.YAMLError as exc:
+                warnings.append(f"proxy_config_invalid:{exc.__class__.__name__}")
+                raw_proxy_config = {}
+            except OSError as exc:
+                warnings.append(f"proxy_config_read_failed:{exc.__class__.__name__}")
+                raw_proxy_config = {}
+            if isinstance(raw_proxy_config, dict):
+                local_proxy = raw_proxy_config.get("local_proxy")
+                if isinstance(local_proxy, dict):
+                    client_name = local_proxy.get("client_name")
+                    status["local_proxy_profile"] = local_proxy.get("profile")
+                    status["local_proxy_client_name"] = client_name
+                    status["local_proxy_client_transport"] = local_proxy.get(
+                        "client_transport"
+                    )
+                    status["local_proxy_telemetry_enabled"] = local_proxy.get(
+                        "telemetry_enabled"
+                    )
+                    status["local_proxy_policy_mode"] = local_proxy.get("policy_mode")
+                    status["local_proxy_allow_unmanaged_client_servers"] = (
+                        local_proxy.get("allow_unmanaged_client_servers")
+                    )
+                    if client_name and str(client_name) != str(status.get("client")):
+                        warnings.append("proxy_config_client_mismatch")
+                    if (
+                        status.get("status") == "mixed"
+                        and local_proxy.get("policy_mode") == "enforce"
+                        and local_proxy.get("allow_unmanaged_client_servers") is False
+                    ):
+                        warnings.append("policy_blocks_unmanaged_servers")
         if not proxy_command_available:
             if proxy_commands and all(
                 "/" in command or "\\" in command for command in proxy_commands
@@ -1531,6 +1565,14 @@ def warning_hint(code: str, client: str) -> Optional[str]:
             "the LightNow entry points at a different Local Proxy config; "
             f"re-run `{sync_command}` to update it."
         ),
+        "proxy_config_client_mismatch": (
+            "the Local Proxy config belongs to a different client; "
+            f"re-run `{sync_command}` for this client."
+        ),
+        "policy_blocks_unmanaged_servers": (
+            "LightNow policy is set to enforce and unmanaged MCP servers are still present; "
+            f"re-run `{sync_command}` or remove the unmanaged entries."
+        ),
     }
     return hints.get(code)
 
@@ -1583,6 +1625,15 @@ def print_config_status(status: dict[str, Any], path: Path) -> None:
         exists = status.get("proxy_config_exists")
         suffix = "" if exists is None else (" (present)" if exists else " (missing)")
         console.print(f"Local Proxy config: {expected_path}{suffix}")
+    proxy_profile = status.get("local_proxy_profile")
+    if proxy_profile:
+        policy_mode = status.get("local_proxy_policy_mode") or "observe"
+        allow_unmanaged = status.get("local_proxy_allow_unmanaged_client_servers")
+        unmanaged_label = "allowed" if allow_unmanaged is not False else "blocked"
+        console.print(
+            "LightNow policy: "
+            f"profile={proxy_profile}, mode={policy_mode}, unmanaged={unmanaged_label}"
+        )
     unmanaged = status.get("unmanaged_servers")
     if isinstance(unmanaged, list) and unmanaged:
         console.print(

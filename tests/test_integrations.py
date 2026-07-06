@@ -1118,7 +1118,6 @@ def test_sync_local_proxy_replaces_existing_codex_mcp_servers() -> None:
         "client_name": "codex",
         "client_version": None,
         "runner_name": "lightnow-local-proxy",
-        "runner_version": "0.1.2",
         "client_transport": "stdio",
     }
     assert proxy_payload["registry_api"]["use_cli_session"] is True
@@ -3085,6 +3084,72 @@ def test_config_status_reports_missing_absolute_proxy_command() -> None:
     payload = json.loads(result.stdout)
     assert payload["local_proxy_command_available"] is False
     assert payload["warnings"] == ["lightnow_proxy_command_missing"]
+
+
+def test_config_status_reports_local_proxy_policy_from_proxy_config() -> None:
+    """Posture includes the managed policy state without exposing secrets."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        proxy_config = Path(tmp) / "proxy.yaml"
+        proxy_config.write_text(
+            yaml.safe_dump(
+                {
+                    "local_proxy": {
+                        "profile": "engineering",
+                        "client_name": "claude-desktop",
+                        "client_transport": "stdio",
+                        "telemetry_enabled": True,
+                        "policy_mode": "enforce",
+                        "allow_unmanaged_client_servers": False,
+                    }
+                }
+            )
+        )
+        target = Path(tmp) / "mcp.json"
+        target.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "LightNow": {
+                            "command": "lightnow-proxy",
+                            "args": [
+                                "--config",
+                                str(proxy_config),
+                                "--transport",
+                                "stdio",
+                            ],
+                        },
+                        "github": {"command": "docker"},
+                    }
+                }
+            )
+        )
+        with patch(
+            "lightnow_cli.commands.integrations.shutil.which",
+            return_value="/usr/local/bin/lightnow-proxy",
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "config-status",
+                    "--client",
+                    "claude-desktop",
+                    "--config-path",
+                    str(target),
+                    "--local-proxy-config-path",
+                    str(proxy_config),
+                    "--json",
+                ],
+            )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "mixed"
+    assert payload["local_proxy_profile"] == "engineering"
+    assert payload["local_proxy_policy_mode"] == "enforce"
+    assert payload["local_proxy_allow_unmanaged_client_servers"] is False
+    assert payload["local_proxy_telemetry_enabled"] is True
+    assert "policy_blocks_unmanaged_servers" in payload["warnings"]
 
 
 def test_config_status_prints_next_step_for_unmanaged_config() -> None:

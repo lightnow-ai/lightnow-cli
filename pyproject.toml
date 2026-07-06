@@ -45,6 +45,8 @@ dev = [
     "isort>=5.12.0",
     "flake8>=6.0.0",
     "mypy>=1.0.0",
+    "types-jsonschema>=4.25.0",
+    "types-PyYAML>=6.0.12",
     "twine>=5.0.0",
 ]
 

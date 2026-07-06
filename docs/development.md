@@ -70,6 +70,13 @@ uses the tenant policy. Managed clients remove unmanaged MCP entries only when
 `allowUnmanagedClientServers` is false. If the policy allows unmanaged entries,
 sync preserves them and the posture remains `mixed`.
 
+When a Local Proxy config exists, `config-status` also reads the non-secret
+runtime posture from that file: selected profile, client identity, client
+transport, telemetry flag, policy mode, and whether unmanaged client MCP
+servers are allowed. If policy mode is `enforce`, unmanaged entries are blocked
+by policy, and the client config still contains unmanaged MCP servers, the
+command reports `policy_blocks_unmanaged_servers`.
+
 The command must not print secrets, headers or payloads. It is the local building
 block for future UI-led enablement and enterprise posture reporting.
 
