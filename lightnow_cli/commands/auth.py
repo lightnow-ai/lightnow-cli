@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import hashlib
+import json
 import secrets
 import time
 import webbrowser
@@ -457,9 +458,18 @@ def status() -> None:
         console.print(f"Token expires: [dim]{exp_time}[/dim]")
 
 
-def whoami() -> None:
+def whoami(
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Print machine-readable identity JSON"),
+    ] = False,
+) -> None:
     """Show current user information."""
     user_info = current_user_info()
+
+    if json_output:
+        typer.echo(json.dumps(user_info, indent=2, sort_keys=True))
+        return
 
     # Display user information
     console.print("[bold blue]Current User Information:[/bold blue]")

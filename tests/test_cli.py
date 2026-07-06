@@ -582,6 +582,36 @@ def test_whoami_command_authenticated(mock_fetch_user_info, mock_load_config, ru
     assert "openid" not in result.stdout
 
 
+@patch("lightnow_cli.config.config_manager.load_config")
+@patch("lightnow_cli.commands.auth.fetch_user_info")
+def test_whoami_command_json(mock_fetch_user_info, mock_load_config, runner):
+    """Whoami can emit machine-readable identity details."""
+    mock_config = MagicMock()
+    mock_config.access_token = (
+        "eyJhbGciOiJub25lIn0." "eyJzdWIiOiIxMjMiLCJleHAiOjk5OTk5OTk5OTl9."
+    )
+    mock_config.refresh_token = None
+    mock_config.issuer = DEFAULT_ISSUER
+    mock_fetch_user_info.return_value = {
+        "email": "test@example.com",
+        "name": "Test User",
+        "preferred_username": "test",
+        "sub": "123456",
+    }
+    mock_load_config.return_value = mock_config
+
+    result = runner.invoke(app, ["whoami", "--json"])
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == {
+        "email": "test@example.com",
+        "name": "Test User",
+        "preferred_username": "test",
+        "sub": "123456",
+    }
+    assert "Current User Information" not in result.stdout
+
+
 @patch("lightnow_cli.commands.auth.config_manager.clear_token")
 def test_logout_command(mock_clear_token, runner):
     """Test logout clears the stored token."""
