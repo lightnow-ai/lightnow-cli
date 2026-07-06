@@ -80,13 +80,20 @@ The recommended setup is Local Proxy mode: your MCP client gets one `LightNow`
 entry and the local proxy resolves the configured MCP servers and secrets at
 runtime.
 
-Install the Local Proxy executable first.
+Install the Local Proxy executable first with Homebrew:
+
+```bash
+brew tap lightnow-ai/tap
+brew install lightnow-proxy
+```
+
+Or install it with `pipx`:
 
 ```bash
 pipx install lightnow-proxy
 ```
 
-Or with `uv`:
+Or install it with `uv`:
 
 ```bash
 uv tool install lightnow-proxy
