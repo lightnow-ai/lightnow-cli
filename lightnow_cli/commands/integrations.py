@@ -99,6 +99,9 @@ LOCAL_LIGHTNOW_CA_RELATIVE_PATH = Path(".local-runtime/certs/lightnow-local-ca.c
 LOCAL_PROXY_EXECUTABLE = "lightnow-proxy"
 LEGACY_LOCAL_PROXY_EXECUTABLE = "mcp-proxy"
 LIGHTNOW_PROXY_ALIASES = {"lightnow", "LightNow"}
+CLIENT_INTERNAL_MCP_SERVERS = {
+    "codex": {"node_repl"},
+}
 LOCAL_PROXY_RUNNER_VERSION = "0.1.2"
 VSCODE_VIRTUAL_TOOLS_THRESHOLD_SETTING = "github.copilot.chat.virtualTools.threshold"
 VSCODE_VIRTUAL_TOOLS_THRESHOLD = 128
@@ -1330,9 +1333,11 @@ def analyze_client_config_content(
     local_proxy_aliases: list[str] = []
     local_proxy_commands: list[str] = []
     legacy_runner_servers: list[str] = []
+    internal_servers: list[str] = []
     unmanaged_servers: list[str] = []
     proxy_config_path = str(expected_proxy_config_path.expanduser())
     warnings: list[str] = []
+    client_internal_servers = CLIENT_INTERNAL_MCP_SERVERS.get(client, set())
     for alias, entry in entries.items():
         raw_command = entry.get("command")
         command: str = raw_command if isinstance(raw_command, str) else ""
@@ -1362,6 +1367,9 @@ def analyze_client_config_content(
         if is_lightnow_runner:
             legacy_runner_servers.append(alias)
             continue
+        if alias in client_internal_servers:
+            internal_servers.append(alias)
+            continue
         unmanaged_servers.append(alias)
 
     if local_proxy_aliases and not unmanaged_servers and not legacy_runner_servers:
@@ -1384,6 +1392,7 @@ def analyze_client_config_content(
         "local_proxy_present": bool(local_proxy_aliases),
         "local_proxy_aliases": sorted(local_proxy_aliases),
         "local_proxy_commands": sorted(set(local_proxy_commands)),
+        "internal_servers": sorted(internal_servers),
         "unmanaged_servers": sorted(unmanaged_servers),
         "legacy_runner_servers": sorted(legacy_runner_servers),
         "warnings": sorted(set(warnings)),

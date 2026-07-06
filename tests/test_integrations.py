@@ -36,6 +36,7 @@ from lightnow_cli.commands.integrations import (
     prepare_json_local_proxy_config,
     print_import_summary,
     redact,
+    render_local_proxy_codex_stdio_toml,
     render_local_proxy_codex_toml,
     render_runner_config,
     secure_write_text,
@@ -509,6 +510,34 @@ def test_analyzes_managed_codex_local_proxy_config() -> None:
 
     assert status["status"] == "managed"
     assert status["local_proxy_present"] is True
+    assert status["unmanaged_servers"] == []
+
+
+def test_analyzes_codex_local_proxy_with_internal_node_repl_as_managed() -> None:
+    """Codex may add internal MCP plumbing that should not be reported as bypass drift."""
+    content = (
+        render_local_proxy_codex_stdio_toml(Path("/tmp/lightnow/codex.yaml")) + """
+
+[mcp_servers.node_repl]
+command = "/Applications/Codex.app/Contents/Resources/cua_node/bin/node_repl"
+args = []
+startup_timeout_sec = 120
+
+[mcp_servers.node_repl.env]
+CODEX_HOME = "/Users/example/.codex"
+"""
+    )
+
+    status = analyze_client_config_content(
+        client="codex",
+        export_format="toml",
+        content=content,
+        expected_proxy_config_path=Path("/tmp/lightnow/codex.yaml"),
+    )
+
+    assert status["status"] == "managed"
+    assert status["local_proxy_aliases"] == ["lightnow"]
+    assert status["internal_servers"] == ["node_repl"]
     assert status["unmanaged_servers"] == []
 
 
