@@ -2705,7 +2705,7 @@ def test_sync_local_proxy_reports_invalid_existing_json() -> None:
             )
 
         assert result.exit_code == 1
-        assert "not valid JSON" in result.stdout
+        assert "not valid JSON" in " ".join(result.stdout.split())
         assert result.exception is None or isinstance(result.exception, SystemExit)
         assert target.read_text() == "{not json"
         assert not proxy_config.exists()
