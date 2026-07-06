@@ -328,6 +328,8 @@ def sync(
     ).expanduser()
     settings_local_proxy_summary: dict[str, Any] = {}
     removed_direct_servers: list[str] = []
+    remove_unmanaged_client_servers = local_proxy
+    policy_managed_sync = False
 
     try:
         if from_settings:
@@ -348,6 +350,10 @@ def sync(
             )
             if local_proxy_settings.get("enabled") is True and client_is_managed:
                 local_proxy = True
+                policy_managed_sync = True
+                remove_unmanaged_client_servers = (
+                    local_proxy_settings.get("allowUnmanagedClientServers") is False
+                )
                 configured_profile = local_proxy_settings.get("profile")
                 if isinstance(configured_profile, str) and configured_profile:
                     profile = configured_profile
@@ -405,12 +411,18 @@ def sync(
             if export_format == "json"
             else {"aliases": [], "input_ids": []}
         )
-        if local_proxy:
+        if local_proxy and remove_unmanaged_client_servers:
             removed_direct_servers = direct_server_aliases(existing, export_format)
-        if local_proxy and client == "codex" and export_format == "toml":
+        if (
+            local_proxy
+            and remove_unmanaged_client_servers
+            and client == "codex"
+            and export_format == "toml"
+        ):
             existing = prepare_codex_local_proxy_config(existing)
         if (
             local_proxy
+            and remove_unmanaged_client_servers
             and client in LOCAL_PROXY_JSON_CLIENTS
             and export_format == "json"
         ):
@@ -471,7 +483,7 @@ def sync(
             console.print("[yellow]Canceled.[/yellow]")
             raise typer.Exit(1)
 
-    if local_proxy and removed_direct_servers and not yes:
+    if local_proxy and removed_direct_servers and not yes and not policy_managed_sync:
         console.print(
             f"[yellow]Local Proxy Mode removes direct MCP server entries from {target}:[/yellow] "
             f"{', '.join(removed_direct_servers)}"
@@ -519,6 +531,10 @@ def sync(
             if settings_local_proxy_summary.get("policyMode") == "enforce":
                 console.print(
                     "[cyan]LightNow policy is enforce: managed clients should keep only the Local Proxy MCP entry.[/cyan]"
+                )
+            if settings_local_proxy_summary.get("allowUnmanagedClientServers") is False:
+                console.print(
+                    "[cyan]LightNow policy blocks unmanaged MCP servers for this client config.[/cyan]"
                 )
         console.print(
             f"[cyan]Next: restart {client} so it picks up the LightNow MCP entry.[/cyan]"

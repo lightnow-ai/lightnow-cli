@@ -128,6 +128,10 @@ Let LightNow choose the configured organization policy for a client:
 lightnow sync --client codex --from-settings
 ```
 
+When LightNow Config blocks unmanaged MCP servers, managed clients keep only the
+`LightNow` entry. When unmanaged servers are allowed, existing user-managed MCP
+entries stay in the client config and `config-status` reports `mixed`.
+
 Check whether a client is configured as expected:
 
 ```bash

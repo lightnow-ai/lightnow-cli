@@ -59,10 +59,16 @@ Expected states:
   user MCP servers are present. Client-internal MCP entries may be reported
   separately as `internal_servers`.
 - `mixed`: LightNow Local Proxy exists, but unmanaged MCP entries are also
-  present.
+  present. This is acceptable when LightNow Config allows unmanaged client
+  servers, but those entries bypass LightNow monitoring and policy.
 - `unmanaged`: MCP entries exist, but none point at the LightNow Local Proxy.
 - `legacy_runner`: older per-server `lightnow run` wrappers are still present.
 - `missing`, `invalid` or `unreadable`: the client config cannot be used as-is.
+
+For settings-driven rollout, `lightnow sync --client <client> --from-settings`
+uses the tenant policy. Managed clients remove unmanaged MCP entries only when
+`allowUnmanagedClientServers` is false. If the policy allows unmanaged entries,
+sync preserves them and the posture remains `mixed`.
 
 The command must not print secrets, headers or payloads. It is the local building
 block for future UI-led enablement and enterprise posture reporting.

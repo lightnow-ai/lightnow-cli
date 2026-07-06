@@ -1594,6 +1594,118 @@ def test_sync_from_settings_uses_local_proxy_policy() -> None:
     assert "policy is enforce" in result.stdout
 
 
+def test_sync_from_settings_blocks_unmanaged_servers_without_prompt() -> None:
+    """Enterprise block policy removes unmanaged client MCP entries non-interactively."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "config.toml"
+        proxy_config = Path(tmp) / "codex-proxy.yaml"
+        target.write_text("""
+[mcp_servers.github]
+command = "docker"
+
+[mcp_servers.github.env]
+GITHUB_TOKEN = "secret"
+""".lstrip())
+        with (
+            patch(
+                "lightnow_cli.commands.integrations.require_access_token",
+                return_value="token",
+            ),
+            patch(
+                "lightnow_cli.commands.integrations.fetch_integration_settings",
+                return_value={
+                    "defaultProfile": "default",
+                    "localProxy": {
+                        "enabled": True,
+                        "profile": "engineering",
+                        "managedClients": ["codex"],
+                        "allowUnmanagedClientServers": False,
+                        "telemetryEnabled": True,
+                        "policyMode": "enforce",
+                    },
+                },
+            ),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "sync",
+                    "--client",
+                    "codex",
+                    "--from-settings",
+                    "--config-path",
+                    str(target),
+                    "--local-proxy-config-path",
+                    str(proxy_config),
+                ],
+            )
+
+        patched = target.read_text()
+
+    assert result.exit_code == 0
+    assert "[mcp_servers.lightnow]" in patched
+    assert "[mcp_servers.github]" not in patched
+    assert "GITHUB_TOKEN" not in patched
+    assert "LightNow policy blocks unmanaged MCP servers" in result.stdout
+    assert "Removed direct MCP server entries" in result.stdout
+
+
+def test_sync_from_settings_allows_unmanaged_servers_when_policy_allows() -> None:
+    """Enterprise allow policy keeps existing user-managed MCP entries."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "config.toml"
+        proxy_config = Path(tmp) / "codex-proxy.yaml"
+        target.write_text("""
+[mcp_servers.github]
+command = "docker"
+args = ["run", "github-mcp"]
+""".lstrip())
+        with (
+            patch(
+                "lightnow_cli.commands.integrations.require_access_token",
+                return_value="token",
+            ),
+            patch(
+                "lightnow_cli.commands.integrations.fetch_integration_settings",
+                return_value={
+                    "defaultProfile": "default",
+                    "localProxy": {
+                        "enabled": True,
+                        "profile": "engineering",
+                        "managedClients": ["codex"],
+                        "allowUnmanagedClientServers": True,
+                        "telemetryEnabled": True,
+                        "policyMode": "observe",
+                    },
+                },
+            ),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "sync",
+                    "--client",
+                    "codex",
+                    "--from-settings",
+                    "--config-path",
+                    str(target),
+                    "--local-proxy-config-path",
+                    str(proxy_config),
+                ],
+            )
+
+        patched = target.read_text()
+
+    assert result.exit_code == 0
+    assert "[mcp_servers.lightnow]" in patched
+    assert "[mcp_servers.github]" in patched
+    assert "Client config posture: mixed" in result.stdout
+    assert "Unmanaged MCP servers" in result.stdout
+    assert "Removed direct MCP server entries" not in result.stdout
+
+
 def test_sync_from_settings_uses_direct_export_for_unmanaged_client() -> None:
     """Settings-driven sync leaves clients outside managedClients on direct config."""
     runner = CliRunner()
