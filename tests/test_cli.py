@@ -52,7 +52,7 @@ def test_cli_version(runner):
     """Test CLI version command."""
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
-    assert "LightNow CLI 1.0.3" in result.stdout
+    assert "LightNow CLI 1.0.4" in result.stdout
 
 
 def test_cli_help(runner):
