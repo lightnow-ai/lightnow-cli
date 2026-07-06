@@ -55,7 +55,9 @@ lightnow config-status --client antigravity --json
 
 Expected states:
 
-- `managed`: only the LightNow Local Proxy entry is configured.
+- `managed`: the LightNow Local Proxy entry is configured and no unmanaged
+  user MCP servers are present. Client-internal MCP entries may be reported
+  separately as `internal_servers`.
 - `mixed`: LightNow Local Proxy exists, but unmanaged MCP entries are also
   present.
 - `unmanaged`: MCP entries exist, but none point at the LightNow Local Proxy.
