@@ -2796,6 +2796,108 @@ def test_config_status_reports_missing_proxy_config_and_binary() -> None:
     assert "mcp_proxy_not_on_path" in payload["warnings"]
 
 
+def test_config_status_accepts_absolute_proxy_command_without_path() -> None:
+    """Desktop clients can start an absolute proxy command even if PATH is sparse."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        proxy_binary = Path(tmp) / "mcp-proxy"
+        proxy_binary.write_text("#!/bin/sh\n")
+        proxy_binary.chmod(0o700)
+        proxy_config = Path(tmp) / "proxy.yaml"
+        proxy_config.write_text("local_proxy: {}\n")
+        target = Path(tmp) / "mcp.json"
+        target.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "LightNow": {
+                            "command": str(proxy_binary),
+                            "args": [
+                                "--config",
+                                str(proxy_config),
+                                "--transport",
+                                "stdio",
+                            ],
+                        }
+                    }
+                }
+            )
+        )
+        with patch(
+            "lightnow_cli.commands.integrations.shutil.which",
+            return_value=None,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "config-status",
+                    "--client",
+                    "claude-desktop",
+                    "--config-path",
+                    str(target),
+                    "--local-proxy-config-path",
+                    str(proxy_config),
+                    "--json",
+                ],
+            )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "managed"
+    assert payload["mcp_proxy_on_path"] is False
+    assert payload["local_proxy_command_available"] is True
+    assert payload["warnings"] == []
+
+
+def test_config_status_reports_missing_absolute_proxy_command() -> None:
+    """A stale absolute proxy command is reported as a command problem, not PATH drift."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        proxy_config = Path(tmp) / "proxy.yaml"
+        proxy_config.write_text("local_proxy: {}\n")
+        missing_binary = Path(tmp) / "missing" / "mcp-proxy"
+        target = Path(tmp) / "mcp.json"
+        target.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "LightNow": {
+                            "command": str(missing_binary),
+                            "args": [
+                                "--config",
+                                str(proxy_config),
+                                "--transport",
+                                "stdio",
+                            ],
+                        }
+                    }
+                }
+            )
+        )
+        with patch(
+            "lightnow_cli.commands.integrations.shutil.which",
+            return_value=None,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "config-status",
+                    "--client",
+                    "claude-desktop",
+                    "--config-path",
+                    str(target),
+                    "--local-proxy-config-path",
+                    str(proxy_config),
+                    "--json",
+                ],
+            )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["local_proxy_command_available"] is False
+    assert payload["warnings"] == ["mcp_proxy_command_missing"]
+
+
 def test_config_status_prints_next_step_for_unmanaged_config() -> None:
     """Human posture output tells lazy users the exact next command."""
     runner = CliRunner()

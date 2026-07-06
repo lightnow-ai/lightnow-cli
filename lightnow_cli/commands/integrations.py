@@ -163,6 +163,16 @@ def mcp_proxy_available() -> bool:
     return shutil.which("mcp-proxy") is not None
 
 
+def command_available(command: str) -> bool:
+    """Return whether a configured executable command can be started."""
+    if command == "":
+        return False
+    expanded = Path(command).expanduser()
+    if expanded.is_absolute() or "/" in command or "\\" in command:
+        return expanded.is_file() and os.access(expanded, os.X_OK)
+    return shutil.which(command) is not None
+
+
 def backup_path_for(path: Path) -> Path:
     """Return the backup path secure_write_text keeps next to a client config."""
     return path.with_suffix(path.suffix + ".lightnow.bak")
@@ -1316,6 +1326,7 @@ def analyze_client_config_content(
         }
 
     local_proxy_aliases: list[str] = []
+    local_proxy_commands: list[str] = []
     legacy_runner_servers: list[str] = []
     unmanaged_servers: list[str] = []
     proxy_config_path = str(expected_proxy_config_path.expanduser())
@@ -1338,6 +1349,8 @@ def analyze_client_config_content(
 
         if is_proxy_alias and is_mcp_proxy:
             local_proxy_aliases.append(alias)
+            if command:
+                local_proxy_commands.append(command)
             if proxy_config_path not in [str(arg) for arg in args] and command:
                 warnings.append("proxy_config_path_mismatch")
             continue
@@ -1365,6 +1378,7 @@ def analyze_client_config_content(
         "expected_proxy_config_path": proxy_config_path,
         "local_proxy_present": bool(local_proxy_aliases),
         "local_proxy_aliases": sorted(local_proxy_aliases),
+        "local_proxy_commands": sorted(set(local_proxy_commands)),
         "unmanaged_servers": sorted(unmanaged_servers),
         "legacy_runner_servers": sorted(legacy_runner_servers),
         "warnings": sorted(set(warnings)),
@@ -1376,13 +1390,27 @@ def augment_local_proxy_posture(status: dict[str, Any]) -> dict[str, Any]:
     warnings = [str(item) for item in status.get("warnings", [])]
     expected_path = status.get("expected_proxy_config_path")
     proxy_config_exists = bool(expected_path) and Path(str(expected_path)).exists()
+    proxy_commands = [
+        str(item) for item in status.get("local_proxy_commands", []) if str(item)
+    ]
+    proxy_command_available = (
+        any(command_available(command) for command in proxy_commands)
+        if proxy_commands
+        else False
+    )
     status["proxy_config_exists"] = proxy_config_exists
     status["mcp_proxy_on_path"] = mcp_proxy_available()
+    status["local_proxy_command_available"] = proxy_command_available
     if status.get("local_proxy_present"):
         if not proxy_config_exists:
             warnings.append("proxy_config_missing")
-        if not status["mcp_proxy_on_path"]:
-            warnings.append("mcp_proxy_not_on_path")
+        if not proxy_command_available:
+            if proxy_commands and all(
+                "/" in command or "\\" in command for command in proxy_commands
+            ):
+                warnings.append("mcp_proxy_command_missing")
+            else:
+                warnings.append("mcp_proxy_not_on_path")
     status["warnings"] = sorted(set(warnings))
     return status
 
@@ -1460,6 +1488,10 @@ def warning_hint(code: str, client: str) -> Optional[str]:
         "mcp_proxy_not_on_path": (
             f"mcp-proxy is not on PATH; {client} cannot start the LightNow entry. "
             + MCP_PROXY_INSTALL_HINT
+        ),
+        "mcp_proxy_command_missing": (
+            "the configured mcp-proxy executable does not exist or is not executable; "
+            f"re-run `{sync_command}` after installing the LightNow mcp-proxy."
         ),
         "proxy_config_path_mismatch": (
             "the LightNow entry points at a different Local Proxy config; "
