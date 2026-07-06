@@ -391,7 +391,7 @@ def test_local_proxy_export_for_codex_writes_one_stdio_server() -> None:
     assert payload == {
         "mcp_servers": {
             "lightnow": {
-                "command": "mcp-proxy",
+                "command": "lightnow-proxy",
                 "args": [
                     "--config",
                     "/tmp/lightnow/mcp-proxy.yaml",
@@ -437,7 +437,7 @@ def test_local_proxy_export_for_claude_desktop_writes_one_stdio_server() -> None
     payload = json.loads(generated)
 
     assert list(payload["mcpServers"]) == ["LightNow"]
-    assert payload["mcpServers"]["LightNow"]["command"].endswith("mcp-proxy")
+    assert payload["mcpServers"]["LightNow"]["command"].endswith("lightnow-proxy")
     assert payload["mcpServers"]["LightNow"]["args"] == [
         "--config",
         "/tmp/lightnow/mcp-proxy.yaml",
@@ -457,7 +457,7 @@ def test_local_proxy_export_for_antigravity_writes_one_stdio_server() -> None:
     payload = json.loads(generated)
 
     assert list(payload["mcpServers"]) == ["LightNow"]
-    assert payload["mcpServers"]["LightNow"]["command"].endswith("mcp-proxy")
+    assert payload["mcpServers"]["LightNow"]["command"].endswith("lightnow-proxy")
     assert payload["mcpServers"]["LightNow"]["args"] == [
         "--config",
         "/tmp/lightnow/antigravity.yaml",
@@ -477,7 +477,7 @@ def test_local_proxy_export_for_gemini_cli_writes_one_stdio_server() -> None:
     payload = json.loads(generated)
 
     assert list(payload["mcpServers"]) == ["LightNow"]
-    assert payload["mcpServers"]["LightNow"]["command"].endswith("mcp-proxy")
+    assert payload["mcpServers"]["LightNow"]["command"].endswith("lightnow-proxy")
     assert payload["mcpServers"]["LightNow"]["args"] == [
         "--config",
         "/tmp/lightnow/mcp-proxy.yaml",
@@ -518,7 +518,7 @@ def test_analyzes_mixed_json_config_with_unmanaged_servers() -> None:
         {
             "mcpServers": {
                 "LightNow": {
-                    "command": "mcp-proxy",
+                    "command": "lightnow-proxy",
                     "args": [
                         "--config",
                         "/tmp/lightnow/claude.yaml",
@@ -558,7 +558,7 @@ def test_config_status_command_prints_machine_readable_posture() -> None:
                 {
                     "mcpServers": {
                         "LightNow": {
-                            "command": "mcp-proxy",
+                            "command": "lightnow-proxy",
                             "args": [
                                 "--config",
                                 f"{tmp}/proxy.yaml",
@@ -624,7 +624,7 @@ def test_analyzes_proxy_config_path_mismatch() -> None:
         {
             "mcpServers": {
                 "LightNow": {
-                    "command": "/usr/local/bin/mcp-proxy",
+                    "command": "/usr/local/bin/lightnow-proxy",
                     "args": [
                         "--config",
                         "/tmp/lightnow/old.yaml",
@@ -953,7 +953,7 @@ def test_sync_local_proxy_dry_run_writes_one_codex_entry_without_fetching_export
 
     assert result.exit_code == 0
     assert "[mcp_servers.lightnow]" in result.stdout
-    assert 'command = "mcp-proxy"' in result.stdout
+    assert 'command = "lightnow-proxy"' in result.stdout
     assert "--transport" in result.stdout
     assert "stdio" in result.stdout
     assert 'default_tools_approval_mode = "approve"' in result.stdout
@@ -1071,7 +1071,7 @@ def test_sync_local_proxy_replaces_existing_codex_mcp_servers() -> None:
     assert "[mcp_servers.lightnow]" in patched
     assert "[mcp_servers.github]" not in patched
     assert "GITHUB_TOKEN" not in patched
-    assert 'command = "mcp-proxy"' in patched
+    assert 'command = "lightnow-proxy"' in patched
     assert str(proxy_config) in patched
     assert '"--transport", "stdio"' in patched
     assert 'url = "http://localhost:8765/mcp"' not in patched
@@ -1142,7 +1142,7 @@ def test_sync_local_proxy_replaces_existing_claude_desktop_mcp_servers() -> None
     assert result.exit_code == 0
     assert patched["preferences"] == {"remoteToolsDeviceName": "mars"}
     assert list(patched["mcpServers"]) == ["LightNow"]
-    assert patched["mcpServers"]["LightNow"]["command"].endswith("mcp-proxy")
+    assert patched["mcpServers"]["LightNow"]["command"].endswith("lightnow-proxy")
     assert patched["mcpServers"]["LightNow"]["args"] == [
         "--config",
         str(proxy_config),
@@ -1213,7 +1213,7 @@ def test_sync_local_proxy_replaces_existing_claude_code_mcp_servers() -> None:
         "/repo": {"mcpServers": {}, "enabledMcpjsonServers": []}
     }
     assert list(patched["mcpServers"]) == ["LightNow"]
-    assert patched["mcpServers"]["LightNow"]["command"].endswith("mcp-proxy")
+    assert patched["mcpServers"]["LightNow"]["command"].endswith("lightnow-proxy")
     assert patched["mcpServers"]["LightNow"]["args"] == [
         "--config",
         str(proxy_config),
@@ -1231,7 +1231,7 @@ def test_warm_local_proxy_tools_cache_runs_proxy_warm_command() -> None:
     with (
         patch(
             "lightnow_cli.commands.integrations.local_proxy_command",
-            return_value="/usr/bin/mcp-proxy",
+            return_value="/usr/bin/lightnow-proxy",
         ),
         patch("lightnow_cli.commands.integrations.subprocess.run") as run,
     ):
@@ -1243,7 +1243,7 @@ def test_warm_local_proxy_tools_cache_runs_proxy_warm_command() -> None:
 
     run.assert_called_once()
     assert run.call_args.args[0] == [
-        "/usr/bin/mcp-proxy",
+        "/usr/bin/lightnow-proxy",
         "--config",
         "/tmp/lightnow/claude-code.yaml",
         "--transport",
@@ -1300,7 +1300,7 @@ def test_sync_local_proxy_replaces_existing_antigravity_mcp_servers() -> None:
     assert result.exit_code == 0
     assert patched["preferences"] == {"approvalMode": "prompt"}
     assert list(patched["mcpServers"]) == ["LightNow"]
-    assert patched["mcpServers"]["LightNow"]["command"].endswith("mcp-proxy")
+    assert patched["mcpServers"]["LightNow"]["command"].endswith("lightnow-proxy")
     assert patched["mcpServers"]["LightNow"]["args"] == [
         "--config",
         str(proxy_config),
@@ -1362,7 +1362,7 @@ def test_sync_local_proxy_replaces_existing_gemini_cli_mcp_servers() -> None:
     assert patched["selectedAuthType"] == "oauth-personal"
     assert patched["theme"] == "Default"
     assert list(patched["mcpServers"]) == ["LightNow"]
-    assert patched["mcpServers"]["LightNow"]["command"].endswith("mcp-proxy")
+    assert patched["mcpServers"]["LightNow"]["command"].endswith("lightnow-proxy")
     assert patched["mcpServers"]["LightNow"]["args"] == [
         "--config",
         str(proxy_config),
@@ -1422,7 +1422,7 @@ def test_sync_local_proxy_replaces_existing_cursor_mcp_servers() -> None:
     assert result.exit_code == 0
     assert patched["preferences"] == {"tools": "enabled"}
     assert list(patched["mcpServers"]) == ["LightNow"]
-    assert patched["mcpServers"]["LightNow"]["command"].endswith("mcp-proxy")
+    assert patched["mcpServers"]["LightNow"]["command"].endswith("lightnow-proxy")
     assert patched["mcpServers"]["LightNow"]["args"] == [
         "--config",
         str(proxy_config),
@@ -1487,7 +1487,7 @@ def test_sync_local_proxy_replaces_existing_vscode_mcp_servers() -> None:
     assert patched["inputs"] == [{"id": "user-input", "type": "promptString"}]
     assert list(patched["servers"]) == ["LightNow"]
     assert patched["servers"]["LightNow"]["type"] == "stdio"
-    assert patched["servers"]["LightNow"]["command"].endswith("mcp-proxy")
+    assert patched["servers"]["LightNow"]["command"].endswith("lightnow-proxy")
     assert patched["servers"]["LightNow"]["args"] == [
         "--config",
         str(proxy_config),
@@ -2711,8 +2711,8 @@ def test_sync_local_proxy_reports_invalid_existing_json() -> None:
         assert not proxy_config.exists()
 
 
-def test_sync_local_proxy_dry_run_warns_when_mcp_proxy_missing() -> None:
-    """Dry-run points out a missing mcp-proxy binary with an install hint."""
+def test_sync_local_proxy_dry_run_warns_when_lightnow_proxy_missing() -> None:
+    """Dry-run points out a missing lightnow-proxy binary with an install hint."""
     runner = CliRunner()
     with tempfile.TemporaryDirectory() as tmp:
         target = Path(tmp) / "config.toml"
@@ -2741,7 +2741,7 @@ def test_sync_local_proxy_dry_run_warns_when_mcp_proxy_missing() -> None:
 
     assert result.exit_code == 0
     assert "Dry run: nothing was written." in result.stderr
-    assert "mcp-proxy was not found on PATH" in result.stderr
+    assert "lightnow-proxy was not found on PATH" in result.stderr
     assert not target.exists()
 
 
@@ -2756,7 +2756,7 @@ def test_config_status_reports_missing_proxy_config_and_binary() -> None:
                 {
                     "mcpServers": {
                         "LightNow": {
-                            "command": "mcp-proxy",
+                            "command": "lightnow-proxy",
                             "args": [
                                 "--config",
                                 str(proxy_config),
@@ -2791,16 +2791,64 @@ def test_config_status_reports_missing_proxy_config_and_binary() -> None:
     assert payload["status"] == "managed"
     assert payload["expected_proxy_config_path"] == str(proxy_config)
     assert payload["proxy_config_exists"] is False
-    assert payload["mcp_proxy_on_path"] is False
+    assert payload["lightnow_proxy_on_path"] is False
     assert "proxy_config_missing" in payload["warnings"]
-    assert "mcp_proxy_not_on_path" in payload["warnings"]
+    assert "lightnow_proxy_not_on_path" in payload["warnings"]
+
+
+def test_config_status_flags_legacy_mcp_proxy_command() -> None:
+    """Legacy mcp-proxy entries are recognized but marked for resync."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "mcp.json"
+        proxy_config = Path(tmp) / "proxy.yaml"
+        proxy_config.write_text("local_proxy: {}\n")
+        target.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "LightNow": {
+                            "command": "mcp-proxy",
+                            "args": [
+                                "--config",
+                                str(proxy_config),
+                                "--transport",
+                                "stdio",
+                            ],
+                        }
+                    }
+                }
+            )
+        )
+        with patch(
+            "lightnow_cli.commands.integrations.shutil.which",
+            return_value="/usr/local/bin/lightnow-proxy",
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "config-status",
+                    "--client",
+                    "claude-desktop",
+                    "--config-path",
+                    str(target),
+                    "--local-proxy-config-path",
+                    str(proxy_config),
+                    "--json",
+                ],
+            )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "managed"
+    assert "legacy_mcp_proxy_command" in payload["warnings"]
 
 
 def test_config_status_accepts_absolute_proxy_command_without_path() -> None:
     """Desktop clients can start an absolute proxy command even if PATH is sparse."""
     runner = CliRunner()
     with tempfile.TemporaryDirectory() as tmp:
-        proxy_binary = Path(tmp) / "mcp-proxy"
+        proxy_binary = Path(tmp) / "lightnow-proxy"
         proxy_binary.write_text("#!/bin/sh\n")
         proxy_binary.chmod(0o700)
         proxy_config = Path(tmp) / "proxy.yaml"
@@ -2844,7 +2892,7 @@ def test_config_status_accepts_absolute_proxy_command_without_path() -> None:
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert payload["status"] == "managed"
-    assert payload["mcp_proxy_on_path"] is False
+    assert payload["lightnow_proxy_on_path"] is False
     assert payload["local_proxy_command_available"] is True
     assert payload["warnings"] == []
 
@@ -2855,7 +2903,7 @@ def test_config_status_reports_missing_absolute_proxy_command() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         proxy_config = Path(tmp) / "proxy.yaml"
         proxy_config.write_text("local_proxy: {}\n")
-        missing_binary = Path(tmp) / "missing" / "mcp-proxy"
+        missing_binary = Path(tmp) / "missing" / "lightnow-proxy"
         target = Path(tmp) / "mcp.json"
         target.write_text(
             json.dumps(
@@ -2895,7 +2943,7 @@ def test_config_status_reports_missing_absolute_proxy_command() -> None:
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert payload["local_proxy_command_available"] is False
-    assert payload["warnings"] == ["mcp_proxy_command_missing"]
+    assert payload["warnings"] == ["lightnow_proxy_command_missing"]
 
 
 def test_config_status_prints_next_step_for_unmanaged_config() -> None:
@@ -2937,12 +2985,12 @@ def test_redact_hides_authorization_and_bearer_lines() -> None:
     assert 'safe = "value"' in result
 
 
-def test_warm_cache_reports_missing_mcp_proxy(capsys) -> None:
-    """A missing mcp-proxy binary yields an install hint, not a stacktrace."""
+def test_warm_cache_reports_missing_lightnow_proxy(capsys) -> None:
+    """A missing lightnow-proxy binary yields an install hint, not a stacktrace."""
     with (
         patch(
             "lightnow_cli.commands.integrations.local_proxy_command",
-            return_value="mcp-proxy",
+            return_value="lightnow-proxy",
         ),
         patch(
             "lightnow_cli.commands.integrations.subprocess.run",
@@ -2953,7 +3001,7 @@ def test_warm_cache_reports_missing_mcp_proxy(capsys) -> None:
 
     output = capsys.readouterr().out.replace("\n", "")
     assert "Could not warm the Claude Code tools cache" in output
-    assert "Install the LightNow mcp-proxy" in output
+    assert "Install the LightNow Proxy" in output
 
 
 def test_sync_local_proxy_vscode_survives_invalid_settings_json() -> None:

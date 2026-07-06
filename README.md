@@ -79,7 +79,7 @@ Install the Local Proxy executable first:
 pipx install lightnow-proxy
 ```
 
-The proxy package installs the `mcp-proxy` command used in MCP client configs.
+The proxy package installs the `lightnow-proxy` command used in MCP client configs.
 
 Then sync your client:
 

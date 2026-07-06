@@ -40,6 +40,11 @@ Before publishing a release:
    - `twine check` passes,
    - a GitHub Release is created with generated release notes and distribution artifacts,
    - PyPI publish succeeds through Trusted Publishing.
+8. Update the Homebrew tap after the release artifact is available:
+   - repository: `lightnow-ai/homebrew-tap`
+   - formula: `Formula/lightnow-cli.rb`
+   - replace the formula template URL, version and SHA256 with the released artifact,
+   - run `brew audit`, `brew install --build-from-source`, and `brew test`.
 
 Do not publish with long-lived local PyPI tokens.
 
