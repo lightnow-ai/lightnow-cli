@@ -4,8 +4,9 @@
 
 The **LightNow CLI** connects your local MCP clients with LightNow.
 
-Use it to discover MCP servers, sync client configurations, and run
-MCP servers with LightNow-managed secrets.
+Use it to sign in, discover MCP servers, configure local AI clients such as
+Codex, Claude Desktop, Cursor, VS Code and Google Antigravity, and keep MCP
+server configuration and secrets managed by LightNow.
 
 ## Install
 
@@ -60,7 +61,52 @@ Show your favorites:
 lightnow favorites
 ```
 
-## Sync a Client Configuration
+## Configure an MCP Client
+
+The recommended setup is Local Proxy mode: your MCP client gets one `LightNow`
+entry and the local proxy resolves the configured MCP servers and secrets at
+runtime.
+
+Install the Local Proxy executable first:
+
+```bash
+pipx install mcp-proxy
+```
+
+Then sync your client:
+
+```bash
+lightnow sync --client codex --local-proxy
+```
+
+Other common clients:
+
+```bash
+lightnow sync --client claude-desktop --local-proxy
+lightnow sync --client antigravity --local-proxy
+lightnow sync --client cursor --local-proxy
+lightnow sync --client vscode --local-proxy
+```
+
+Let LightNow choose the configured organization policy for a client:
+
+```bash
+lightnow sync --client codex --from-settings
+```
+
+Check whether a client is configured as expected:
+
+```bash
+lightnow config-status --client codex
+lightnow config-status --client claude-desktop --json
+lightnow config-status --client cursor --json
+lightnow config-status --client vscode --json
+```
+
+For details, examples, diagrams and troubleshooting, see
+[Connect MCP clients](https://docs.lightnow.ai/getting-started/sync-mcp-clients).
+
+### Direct Sync
 
 Sync your default LightNow runtime profile into Codex:
 
@@ -81,56 +127,12 @@ files:
 lightnow sync --client codex --runner
 ```
 
-For the M2 Local Proxy flow, write a single Codex MCP entry that points to the
-local LightNow proxy instead of writing one entry per MCP server:
-
-```bash
-lightnow sync --client codex --local-proxy
-```
-
-The same Local Proxy mode is available for local clients with JSON MCP config
-files, including Claude Desktop, Google Antigravity, Cursor, and VS Code:
-
-```bash
-lightnow sync --client claude-desktop --local-proxy
-lightnow sync --client antigravity --local-proxy
-lightnow sync --client cursor --local-proxy
-lightnow sync --client vscode --local-proxy
-```
-
-For UI-led rollouts, let the CLI read the desired Config policy from LightNow
-and choose Sync Mode or Local Proxy Mode for the selected client:
-
-```bash
-lightnow sync --client codex --from-settings
-```
-
-This writes one client entry that starts `mcp-proxy` over stdio plus a
-per-client config under `~/.lightnow/mcp-proxy/`. The Local Proxy then
-uses the existing LightNow CLI login session to fetch the selected runtime
-profile and resolve server config plus secrets at runtime. For daemon-style
-testing, pass `--local-proxy-transport http` to write a localhost Streamable
-HTTP entry instead. The older `--runner` flag remains a compatibility path that
-writes one `lightnow run` wrapper per profile server.
+For daemon-style local testing, `--local-proxy-transport http` writes a
+localhost Streamable HTTP entry instead of a stdio auto-start entry.
 
 Note: Google has moved individual Gemini CLI users to Antigravity. LightNow
 keeps `gemini-cli` support for Enterprise/API-key environments, but
 `antigravity` is the recommended Google local client target for individuals.
-
-Check whether a client is still in the expected Local Proxy posture:
-
-```bash
-lightnow config-status --client codex
-lightnow config-status --client antigravity --json
-lightnow config-status --client cursor --json
-lightnow config-status --client vscode --json
-```
-
-This reports whether the LightNow proxy entry is present, whether unmanaged MCP
-servers are still configured next to it, and whether an older per-server runner
-wrapper is still in use. The status output is redacted and intended for the
-LightNow UI, installers and enterprise rollout checks as well as local
-troubleshooting.
 
 ## Run One Server
 
