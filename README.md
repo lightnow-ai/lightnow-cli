@@ -80,9 +80,7 @@ The recommended setup is Local Proxy mode: your MCP client gets one `LightNow`
 entry and the local proxy resolves the configured MCP servers and secrets at
 runtime.
 
-Install the Local Proxy executable first. `lightnow-proxy` is currently being
-prepared for its first public preview release; use the package commands below
-once that release is available.
+Install the Local Proxy executable first.
 
 ```bash
 pipx install lightnow-proxy
@@ -96,10 +94,10 @@ uv tool install lightnow-proxy
 
 The proxy package installs the `lightnow-proxy` command used in MCP client configs.
 
-For internal preview testing from a local checkout:
+For local development from a checkout:
 
 ```bash
-uv tool install --from /path/to/mcp-proxy lightnow-proxy
+uv tool install --from /path/to/lightnow-proxy lightnow-proxy
 ```
 
 Then sync your client:
