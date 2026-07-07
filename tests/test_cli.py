@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from typer.testing import CliRunner
 
+from lightnow_cli import __version__
 from lightnow_cli.config import (
     DEFAULT_CLIENT_ID,
     DEFAULT_ISSUER,
@@ -52,7 +53,7 @@ def test_cli_version(runner):
     """Test CLI version command."""
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
-    assert "LightNow CLI 1.0.5" in result.stdout
+    assert f"LightNow CLI {__version__}" in result.stdout
 
 
 def test_cli_help(runner):
