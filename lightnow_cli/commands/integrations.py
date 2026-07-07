@@ -82,6 +82,14 @@ CLIENT_DEFAULTS: dict[str, tuple[str, Path]] = {
 }
 
 CLIENTS = sorted(CLIENT_DEFAULTS)
+IMPORT_CLIENTS = {
+    "antigravity",
+    "claude-code",
+    "claude-desktop",
+    "codex",
+    "cursor",
+    "vscode",
+}
 SECRET_MODES = ["placeholder", "plaintext"]
 LOCAL_PROXY_MCP_SERVERS_JSON_CLIENTS = {
     "antigravity",
@@ -652,9 +660,10 @@ def import_config(
     if client not in CLIENT_DEFAULTS:
         raise_bad_argument("Unsupported client", f"Use one of: {', '.join(CLIENTS)}")
     _, default_path = CLIENT_DEFAULTS[client]
-    if client != "codex":
+    if client not in IMPORT_CLIENTS:
         raise_bad_argument(
-            "Unsupported import client", "Config import currently supports Codex."
+            "Unsupported import client",
+            f"Config import supports: {', '.join(sorted(IMPORT_CLIENTS))}.",
         )
 
     target = (config_path or default_path).expanduser()

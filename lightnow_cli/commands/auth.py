@@ -498,6 +498,14 @@ def whoami(
 
 def current_user_info() -> Dict[str, Any]:
     """Return current user info after verifying or refreshing the access token."""
+
+    def fallback_claims_or_exit(token_value: str, exc: AuthError) -> Dict[str, Any]:
+        claims = get_user_info(token_value)
+        if claims is not None and claims.get("sub"):
+            return claims
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
     try:
         token = require_access_token()
     except AccessTokenExpired as exc:
@@ -514,16 +522,17 @@ def current_user_info() -> Dict[str, Any]:
         try:
             token = refresh_current_session()
             config = config_manager.load_config()
-            return asyncio.run(fetch_user_info(config.issuer or DEFAULT_ISSUER, token))
+            try:
+                return asyncio.run(
+                    fetch_user_info(config.issuer or DEFAULT_ISSUER, token)
+                )
+            except AuthError as exc:
+                return fallback_claims_or_exit(token, exc)
         except AccessTokenExpired as exc:
             console.print(f"[red]{exc}[/red]")
             raise typer.Exit(1) from exc
-        except AuthError as exc:
-            console.print(f"[red]{exc}[/red]")
-            raise typer.Exit(1) from exc
     except AuthError as exc:
-        console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(1) from exc
+        return fallback_claims_or_exit(token, exc)
 
 
 def logout() -> None:

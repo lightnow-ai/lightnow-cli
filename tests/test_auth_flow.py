@@ -379,3 +379,26 @@ def test_current_user_info_retries_userinfo_after_refresh(monkeypatch) -> None:
 
     assert auth.current_user_info()["email"] == "test@lightnow.local"
     assert calls == ["old-access-token", "new-access-token"]
+
+
+def test_current_user_info_falls_back_to_token_claims_when_userinfo_rejects(
+    monkeypatch,
+) -> None:
+    """Whoami/status can still display identity when the issuer rejects userinfo."""
+    token = (
+        "eyJhbGciOiJub25lIn0."
+        "eyJzdWIiOiIxMjMiLCJlbWFpbCI6InRlc3RAbGlnaHRub3cubG9jYWwiLCJwcmVmZXJyZWRfdXNlcm5hbWUiOiJ0ZXN0IiwiZXhwIjo5OTk5OTk5OTk5fQ."
+    )
+    config = Config(access_token=token)
+
+    async def fetch(_: str, __: str) -> dict[str, str]:
+        raise auth.AuthError("Failed to fetch user information: HTTP 403")
+
+    monkeypatch.setattr(auth.config_manager, "load_config", lambda: config)
+    monkeypatch.setattr(auth, "require_access_token", lambda: token)
+    monkeypatch.setattr(auth, "fetch_user_info", fetch)
+
+    user_info = auth.current_user_info()
+
+    assert user_info["sub"] == "123"
+    assert user_info["email"] == "test@lightnow.local"
