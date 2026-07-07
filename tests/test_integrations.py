@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import httpx
+import pytest
 import yaml
 from typer.testing import CliRunner
 
@@ -18,6 +19,7 @@ from lightnow_cli.commands.auth import (
 from lightnow_cli.commands.integrations import (
     BEGIN,
     END,
+    IMPORT_CLIENTS,
     JSON_MANIFEST_SUFFIX,
     analyze_client_config_content,
     analyze_client_config_file,
@@ -26,6 +28,7 @@ from lightnow_cli.commands.integrations import (
     build_runner_export,
     configure_vscode_virtual_tools,
     default_local_proxy_config_path,
+    default_local_proxy_profile_config_path,
     discover_local_lightnow_ca_file,
     extract_json_managed,
     fetch_export,
@@ -496,6 +499,15 @@ def test_default_local_proxy_config_path_is_client_specific() -> None:
     assert default_local_proxy_config_path("gemini-cli").name == "gemini-cli.yaml"
     assert (
         default_local_proxy_config_path("Claude Desktop").name == "Claude-Desktop.yaml"
+    )
+
+
+def test_default_local_proxy_profile_config_path_is_profile_specific() -> None:
+    """The proxy health default is keyed by profile, not by MCP client."""
+    assert default_local_proxy_profile_config_path("default").name == "default.yaml"
+    assert (
+        default_local_proxy_profile_config_path("Engineering Team").name
+        == "Engineering-Team.yaml"
     )
 
 
@@ -1124,6 +1136,50 @@ def test_sync_local_proxy_replaces_existing_codex_mcp_servers() -> None:
     assert proxy_payload["registry_api"]["include_secrets"] is True
     assert proxy_payload["profiles"] == {"default": {}}
     assert proxy_payload["upstreams"] == {}
+
+
+def test_sync_local_proxy_updates_default_profile_config_alias() -> None:
+    """Default-profile sync also updates the config path used by lightnow-proxy --health."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "config.toml"
+        proxy_config = Path(tmp) / "codex.yaml"
+        default_config = Path(tmp) / "default.yaml"
+        with (
+            patch(
+                "lightnow_cli.commands.integrations.require_access_token",
+                return_value="token",
+            ),
+            patch(
+                "lightnow_cli.commands.integrations.default_local_proxy_config_path",
+                return_value=proxy_config,
+            ),
+            patch(
+                "lightnow_cli.commands.integrations.default_local_proxy_profile_config_path",
+                return_value=default_config,
+            ),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "sync",
+                    "--client",
+                    "codex",
+                    "--local-proxy",
+                    "--yes",
+                    "--config-path",
+                    str(target),
+                ],
+            )
+            proxy_exists = proxy_config.exists()
+            default_exists = default_config.exists()
+            configs_match = default_config.read_text() == proxy_config.read_text()
+
+    assert result.exit_code == 0
+    assert proxy_exists
+    assert default_exists
+    assert configs_match
+    assert "Updated default Local Proxy config" in result.stdout
 
 
 def test_sync_local_proxy_replaces_existing_claude_desktop_mcp_servers() -> None:
@@ -2558,6 +2614,81 @@ def test_import_config_command_prints_only_redacted_summary() -> None:
     assert "secret-value" not in result.stdout
     assert "GITHUB_TOKEN" not in result.stdout
     importer.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "client, filename",
+    [
+        ("antigravity", "mcp_config.json"),
+        ("claude-code", "claude.json"),
+        ("claude-desktop", "claude_desktop_config.json"),
+        ("cursor", "mcp.json"),
+        ("vscode", "mcp.json"),
+    ],
+)
+def test_import_config_command_accepts_wizard_clients(
+    client: str, filename: str
+) -> None:
+    """Wizard clients can import their existing JSON MCP config."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / filename
+        target.write_text('{"mcpServers":{"github":{"command":"docker"}}}')
+        with (
+            patch(
+                "lightnow_cli.commands.integrations.require_access_token",
+                return_value="token",
+            ),
+            patch(
+                "lightnow_cli.commands.integrations.import_profile_config",
+                return_value={
+                    "dry_run": True,
+                    "profile": {"name": "default"},
+                    "summary": {
+                        "total": 1,
+                        "mapped": 1,
+                        "custom": 0,
+                        "importable": 1,
+                        "blocked": 0,
+                    },
+                    "servers": [
+                        {
+                            "alias": "github",
+                            "status": "mapped",
+                            "server_name": "io.github.github/github-mcp-server",
+                        }
+                    ],
+                },
+            ) as importer,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "import-config",
+                    "--client",
+                    client,
+                    "--config-path",
+                    str(target),
+                    "--dry-run",
+                ],
+            )
+
+    assert result.exit_code == 0
+    assert "Previewed" in result.stdout
+    importer.assert_called_once()
+    assert importer.call_args.kwargs["source"] == client
+    assert client in IMPORT_CLIENTS
+
+
+def test_import_config_command_rejects_non_wizard_clients() -> None:
+    """Import stays limited to clients that the onboarding wizard supports."""
+    runner = CliRunner()
+    result = runner.invoke(app, ["import-config", "--client", "gemini-cli"])
+
+    assert result.exit_code != 0
+    assert "Unsupported import client" in result.stdout
+    assert "antigravity" in result.stdout
+    assert "gemini-cli" not in result.stdout.split("Config import supports:", 1)[-1]
 
 
 def test_fetch_export_refreshes_and_retries_after_unauthorized() -> None:

@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import hashlib
+import json
 import secrets
 import time
 import webbrowser
@@ -457,9 +458,18 @@ def status() -> None:
         console.print(f"Token expires: [dim]{exp_time}[/dim]")
 
 
-def whoami() -> None:
+def whoami(
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Print machine-readable identity JSON"),
+    ] = False,
+) -> None:
     """Show current user information."""
     user_info = current_user_info()
+
+    if json_output:
+        typer.echo(json.dumps(user_info, indent=2, sort_keys=True))
+        return
 
     # Display user information
     console.print("[bold blue]Current User Information:[/bold blue]")
@@ -488,6 +498,14 @@ def whoami() -> None:
 
 def current_user_info() -> Dict[str, Any]:
     """Return current user info after verifying or refreshing the access token."""
+
+    def fallback_claims_or_exit(token_value: str, exc: AuthError) -> Dict[str, Any]:
+        claims = get_user_info(token_value)
+        if claims is not None and claims.get("sub"):
+            return claims
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
     try:
         token = require_access_token()
     except AccessTokenExpired as exc:
@@ -504,16 +522,17 @@ def current_user_info() -> Dict[str, Any]:
         try:
             token = refresh_current_session()
             config = config_manager.load_config()
-            return asyncio.run(fetch_user_info(config.issuer or DEFAULT_ISSUER, token))
+            try:
+                return asyncio.run(
+                    fetch_user_info(config.issuer or DEFAULT_ISSUER, token)
+                )
+            except AuthError as exc:
+                return fallback_claims_or_exit(token, exc)
         except AccessTokenExpired as exc:
             console.print(f"[red]{exc}[/red]")
             raise typer.Exit(1) from exc
-        except AuthError as exc:
-            console.print(f"[red]{exc}[/red]")
-            raise typer.Exit(1) from exc
     except AuthError as exc:
-        console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(1) from exc
+        return fallback_claims_or_exit(token, exc)
 
 
 def logout() -> None:

@@ -82,6 +82,14 @@ CLIENT_DEFAULTS: dict[str, tuple[str, Path]] = {
 }
 
 CLIENTS = sorted(CLIENT_DEFAULTS)
+IMPORT_CLIENTS = {
+    "antigravity",
+    "claude-code",
+    "claude-desktop",
+    "codex",
+    "cursor",
+    "vscode",
+}
 SECRET_MODES = ["placeholder", "plaintext"]
 LOCAL_PROXY_MCP_SERVERS_JSON_CLIENTS = {
     "antigravity",
@@ -122,6 +130,27 @@ def default_local_proxy_config_path(client: str) -> Path:
     """Return the per-client Local Proxy config path used by sync."""
     safe_client = re.sub(r"[^A-Za-z0-9_.-]+", "-", client).strip("-") or "client"
     return DEFAULT_LOCAL_PROXY_CONFIG_DIR / f"{safe_client}.yaml"
+
+
+def default_local_proxy_profile_config_path(profile: str = "default") -> Path:
+    """Return the profile-level Local Proxy config path used by proxy defaults."""
+    safe_profile = re.sub(r"[^A-Za-z0-9_.-]+", "-", profile).strip("-") or "default"
+    return DEFAULT_LOCAL_PROXY_CONFIG_DIR / f"{safe_profile}.yaml"
+
+
+def local_proxy_default_config_alias(
+    *,
+    profile: str,
+    explicit_config_path: Optional[Path],
+    proxy_target: Path,
+) -> Optional[Path]:
+    """Return the default health-check alias path that should mirror a sync."""
+    if explicit_config_path is not None or profile != "default":
+        return None
+    alias = default_local_proxy_profile_config_path(profile).expanduser()
+    if alias == proxy_target.expanduser():
+        return None
+    return alias
 
 
 def discover_local_lightnow_ca_file(registry_api_url: str) -> Optional[Path]:
@@ -325,6 +354,7 @@ def sync(
     proxy_target = (
         local_proxy_config_path or default_local_proxy_config_path(client)
     ).expanduser()
+    proxy_default_alias: Optional[Path] = None
     settings_local_proxy_summary: dict[str, Any] = {}
     removed_direct_servers: list[str] = []
     remove_unmanaged_client_servers = local_proxy
@@ -360,6 +390,11 @@ def sync(
                 profile = str(settings_payload["defaultProfile"])
 
         if local_proxy:
+            proxy_default_alias = local_proxy_default_config_alias(
+                profile=profile,
+                explicit_config_path=local_proxy_config_path,
+                proxy_target=proxy_target,
+            )
             generated = build_local_proxy_export(
                 client=client,
                 export_format=export_format,
@@ -456,6 +491,10 @@ def sync(
             err_console.print(
                 f"[cyan]Would write Local Proxy config: {proxy_target}[/cyan]"
             )
+            if proxy_default_alias is not None:
+                err_console.print(
+                    f"[cyan]Would update default Local Proxy config: {proxy_default_alias}[/cyan]"
+                )
             if removed_direct_servers:
                 err_console.print(
                     "[yellow]Would remove direct MCP server entries:[/yellow] "
@@ -501,6 +540,11 @@ def sync(
     if local_proxy:
         secure_write_text(proxy_target, proxy_config)
         console.print(f"[green]Wrote Local Proxy config to {proxy_target}[/green]")
+        if proxy_default_alias is not None:
+            secure_write_text(proxy_default_alias, proxy_config)
+            console.print(
+                f"[green]Updated default Local Proxy config at {proxy_default_alias}[/green]"
+            )
         if client == "claude-code":
             warm_local_proxy_tools_cache(proxy_target)
 
@@ -616,9 +660,10 @@ def import_config(
     if client not in CLIENT_DEFAULTS:
         raise_bad_argument("Unsupported client", f"Use one of: {', '.join(CLIENTS)}")
     _, default_path = CLIENT_DEFAULTS[client]
-    if client != "codex":
+    if client not in IMPORT_CLIENTS:
         raise_bad_argument(
-            "Unsupported import client", "Config import currently supports Codex."
+            "Unsupported import client",
+            f"Config import supports: {', '.join(sorted(IMPORT_CLIENTS))}.",
         )
 
     target = (config_path or default_path).expanduser()
