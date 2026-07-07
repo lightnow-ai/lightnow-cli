@@ -26,6 +26,7 @@ from lightnow_cli.commands.integrations import (
     build_runner_export,
     configure_vscode_virtual_tools,
     default_local_proxy_config_path,
+    default_local_proxy_profile_config_path,
     discover_local_lightnow_ca_file,
     extract_json_managed,
     fetch_export,
@@ -496,6 +497,15 @@ def test_default_local_proxy_config_path_is_client_specific() -> None:
     assert default_local_proxy_config_path("gemini-cli").name == "gemini-cli.yaml"
     assert (
         default_local_proxy_config_path("Claude Desktop").name == "Claude-Desktop.yaml"
+    )
+
+
+def test_default_local_proxy_profile_config_path_is_profile_specific() -> None:
+    """The proxy health default is keyed by profile, not by MCP client."""
+    assert default_local_proxy_profile_config_path("default").name == "default.yaml"
+    assert (
+        default_local_proxy_profile_config_path("Engineering Team").name
+        == "Engineering-Team.yaml"
     )
 
 
@@ -1124,6 +1134,50 @@ def test_sync_local_proxy_replaces_existing_codex_mcp_servers() -> None:
     assert proxy_payload["registry_api"]["include_secrets"] is True
     assert proxy_payload["profiles"] == {"default": {}}
     assert proxy_payload["upstreams"] == {}
+
+
+def test_sync_local_proxy_updates_default_profile_config_alias() -> None:
+    """Default-profile sync also updates the config path used by lightnow-proxy --health."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "config.toml"
+        proxy_config = Path(tmp) / "codex.yaml"
+        default_config = Path(tmp) / "default.yaml"
+        with (
+            patch(
+                "lightnow_cli.commands.integrations.require_access_token",
+                return_value="token",
+            ),
+            patch(
+                "lightnow_cli.commands.integrations.default_local_proxy_config_path",
+                return_value=proxy_config,
+            ),
+            patch(
+                "lightnow_cli.commands.integrations.default_local_proxy_profile_config_path",
+                return_value=default_config,
+            ),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "sync",
+                    "--client",
+                    "codex",
+                    "--local-proxy",
+                    "--yes",
+                    "--config-path",
+                    str(target),
+                ],
+            )
+            proxy_exists = proxy_config.exists()
+            default_exists = default_config.exists()
+            configs_match = default_config.read_text() == proxy_config.read_text()
+
+    assert result.exit_code == 0
+    assert proxy_exists
+    assert default_exists
+    assert configs_match
+    assert "Updated default Local Proxy config" in result.stdout
 
 
 def test_sync_local_proxy_replaces_existing_claude_desktop_mcp_servers() -> None:
