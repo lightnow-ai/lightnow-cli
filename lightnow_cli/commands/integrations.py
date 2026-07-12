@@ -230,7 +230,7 @@ def json_server_maps_are_empty(content: str) -> bool:
         return False
     sections = [payload[key] for key in ("mcpServers", "servers") if key in payload]
     return bool(sections) and all(
-        section == {} or section == [] for section in sections
+        isinstance(section, dict) and not section for section in sections
     )
 
 
@@ -1924,8 +1924,6 @@ def patch_json_config(
         incoming_section = incoming[key]
         if current_section is None:
             current_section = {}
-        if incoming_section == []:
-            incoming_section = {}
         if not isinstance(current_section, dict) or not isinstance(
             incoming_section, dict
         ):

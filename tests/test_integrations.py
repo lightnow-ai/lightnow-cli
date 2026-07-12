@@ -302,14 +302,8 @@ def test_sync_json_writes_manifest_and_preserves_user_config() -> None:
         assert target.with_suffix(".json.lightnow.bak").exists()
 
 
-@pytest.mark.parametrize(
-    "generated",
-    ['{"mcpServers": []}', '{"mcpServers": {}}'],
-)
-def test_empty_antigravity_profile_preserves_servers_and_suggests_import(
-    generated: str,
-) -> None:
-    """An empty list from the API is accepted and existing client servers can be imported."""
+def test_empty_antigravity_profile_preserves_servers_and_suggests_import() -> None:
+    """An empty server map preserves client servers and suggests importing them."""
     runner = CliRunner()
     with tempfile.TemporaryDirectory() as tmp:
         target = Path(tmp) / "mcp_config.json"
@@ -333,7 +327,7 @@ def test_empty_antigravity_profile_preserves_servers_and_suggests_import(
             ),
             patch(
                 "lightnow_cli.commands.integrations.fetch_export",
-                return_value=generated,
+                return_value='{"mcpServers": {}}',
             ),
         ):
             result = runner.invoke(
@@ -358,6 +352,15 @@ def test_empty_antigravity_profile_preserves_servers_and_suggests_import(
     assert "lightnow import-config --client antigravity" in compact_stderr
     assert f"--config-path {target}" in compact_stderr
     assert "--dry-run" in compact_stderr
+
+
+def test_json_sync_rejects_non_object_server_map() -> None:
+    """JSON exports must provide object-shaped server maps."""
+    with pytest.raises(
+        ValueError,
+        match="LightNow can only sync JSON object field mcpServers",
+    ):
+        patch_config("{}", '{"mcpServers": []}', "json")
 
 
 def test_sync_json_preserves_user_inputs_and_replaces_lightnow_inputs() -> None:
