@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -222,6 +223,70 @@ def direct_server_aliases(content: str, export_format: str) -> list[str]:
     return sorted(alias for alias in entries if alias not in LIGHTNOW_PROXY_ALIASES)
 
 
+def json_server_maps_are_empty(content: str) -> bool:
+    """Return whether a JSON export contains only empty server maps."""
+    payload = json.loads(content)
+    if not isinstance(payload, dict):
+        return False
+    sections = [payload[key] for key in ("mcpServers", "servers") if key in payload]
+    return bool(sections) and all(
+        section == {} or section == [] for section in sections
+    )
+
+
+def empty_profile_import_command(
+    *,
+    client: str,
+    profile: str,
+    target: Path,
+    tenant: Optional[str],
+    api_url: Optional[str],
+) -> str:
+    """Build a copyable command that previews importing an existing client config."""
+    args = [
+        "lightnow",
+        "import-config",
+        "--client",
+        client,
+        "--profile",
+        profile,
+        "--config-path",
+        str(target),
+        "--dry-run",
+    ]
+    if tenant:
+        args.extend(["--tenant", tenant])
+    if api_url:
+        args.extend(["--api-url", api_url])
+    return shlex.join(args)
+
+
+def print_empty_profile_import_hint(
+    *,
+    client: str,
+    profile: str,
+    target: Path,
+    aliases: list[str],
+    tenant: Optional[str],
+    api_url: Optional[str],
+) -> None:
+    """Explain that existing client servers were preserved and can be imported."""
+    err_console.print(
+        f"[yellow]LightNow profile {profile} has no MCP servers, but {client} already "
+        f"configures: {', '.join(aliases)}. These existing client entries were kept.[/yellow]"
+    )
+    command = empty_profile_import_command(
+        client=client,
+        profile=profile,
+        target=target,
+        tenant=tenant,
+        api_url=api_url,
+    )
+    err_console.print(
+        f"[cyan]To preview importing them into LightNow, run:[/cyan] {command}"
+    )
+
+
 @app.command("sync")
 def sync(
     client: Annotated[str, typer.Option("--client", help="Target MCP client")],
@@ -357,6 +422,7 @@ def sync(
     proxy_default_alias: Optional[Path] = None
     settings_local_proxy_summary: dict[str, Any] = {}
     removed_direct_servers: list[str] = []
+    empty_profile_existing_aliases: list[str] = []
     remove_unmanaged_client_servers = local_proxy
     policy_managed_sync = False
 
@@ -468,6 +534,18 @@ def sync(
             previous_managed["aliases"],
             previous_managed["input_ids"],
         )
+        if (
+            not local_proxy
+            and not runner
+            and export_format == "json"
+            and json_server_maps_are_empty(generated)
+        ):
+            managed_aliases = set(previous_managed["aliases"])
+            empty_profile_existing_aliases = [
+                alias
+                for alias in direct_server_aliases(existing, export_format)
+                if alias not in managed_aliases
+            ]
     except AccessTokenExpired:
         console.print(f"[red]{ACCESS_TOKEN_EXPIRED_MESSAGE}[/red]")
         raise typer.Exit(1)
@@ -482,6 +560,16 @@ def sync(
     except ValueError as exc:
         console.print(f"[bold red]Integration sync failed:[/bold red] {exc}")
         raise typer.Exit(1) from exc
+
+    if empty_profile_existing_aliases:
+        print_empty_profile_import_hint(
+            client=client,
+            profile=profile,
+            target=target,
+            aliases=empty_profile_existing_aliases,
+            tenant=tenant,
+            api_url=api_url,
+        )
 
     if dry_run:
         typer.echo(redact(patched))
@@ -1836,6 +1924,8 @@ def patch_json_config(
         incoming_section = incoming[key]
         if current_section is None:
             current_section = {}
+        if incoming_section == []:
+            incoming_section = {}
         if not isinstance(current_section, dict) or not isinstance(
             incoming_section, dict
         ):

@@ -302,6 +302,64 @@ def test_sync_json_writes_manifest_and_preserves_user_config() -> None:
         assert target.with_suffix(".json.lightnow.bak").exists()
 
 
+@pytest.mark.parametrize(
+    "generated",
+    ['{"mcpServers": []}', '{"mcpServers": {}}'],
+)
+def test_empty_antigravity_profile_preserves_servers_and_suggests_import(
+    generated: str,
+) -> None:
+    """An empty list from the API is accepted and existing client servers can be imported."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "mcp_config.json"
+        target.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "local-redis": {
+                            "command": "docker",
+                            "args": ["run", "--rm", "mcp/redis"],
+                        }
+                    }
+                }
+            )
+        )
+
+        with (
+            patch(
+                "lightnow_cli.commands.integrations.require_access_token",
+                return_value="token",
+            ),
+            patch(
+                "lightnow_cli.commands.integrations.fetch_export",
+                return_value=generated,
+            ),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "sync",
+                    "--client",
+                    "antigravity",
+                    "--config-path",
+                    str(target),
+                    "--yes",
+                ],
+            )
+
+        payload = json.loads(target.read_text())
+
+    assert result.exit_code == 0
+    assert payload["mcpServers"]["local-redis"]["command"] == "docker"
+    assert "LightNow profile default has no MCP servers" in result.stderr
+    assert "These existing client entries were kept" in result.stderr
+    compact_stderr = result.stderr.replace("\n", "")
+    assert "lightnow import-config --client antigravity" in compact_stderr
+    assert f"--config-path {target}" in compact_stderr
+    assert "--dry-run" in compact_stderr
+
+
 def test_sync_json_preserves_user_inputs_and_replaces_lightnow_inputs() -> None:
     """VS Code sync patches inputs without deleting user-owned prompts."""
     existing = json.dumps(
