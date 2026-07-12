@@ -413,6 +413,7 @@ def sync(
                 local_proxy_settings=(
                     settings_local_proxy_summary if from_settings else None
                 ),
+                runtime_secrets=read_local_runtime_secrets(proxy_target),
             )
         elif runner:
             profile_payload = fetch_profile_servers(
@@ -886,6 +887,7 @@ def build_local_proxy_config(
     tenant: Optional[str],
     registry_ca_file: Optional[Path] = None,
     local_proxy_settings: Optional[dict[str, Any]] = None,
+    runtime_secrets: Optional[dict[str, Any]] = None,
 ) -> str:
     """Render the local LightNow Proxy config for LightNow-managed profile sync."""
     parsed = urlparse(local_proxy_url)
@@ -952,10 +954,28 @@ def build_local_proxy_config(
             "jwks_cache_seconds": 300,
         },
         "registry_api": registry_api,
+        "runtime_secrets": runtime_secrets or {"providers": {}},
         "profiles": {profile: {}},
         "upstreams": {},
     }
     return cast(str, yaml.safe_dump(payload, sort_keys=False))
+
+
+def read_local_runtime_secrets(path: Path) -> dict[str, Any]:
+    """Preserve non-secret local provider mappings across managed config syncs."""
+    try:
+        payload = yaml.safe_load(path.expanduser().read_text()) or {}
+    except (FileNotFoundError, OSError, yaml.YAMLError):
+        return {"providers": {}}
+    if not isinstance(payload, dict):
+        return {"providers": {}}
+    runtime_secrets = payload.get("runtime_secrets")
+    if not isinstance(runtime_secrets, dict):
+        return {"providers": {}}
+    providers = runtime_secrets.get("providers")
+    if not isinstance(providers, dict):
+        return {"providers": {}}
+    return {"providers": providers}
 
 
 def build_runner_export(

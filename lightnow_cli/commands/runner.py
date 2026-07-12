@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import httpx
 import typer
@@ -83,6 +84,7 @@ def run(
             version=str(selected["version"]),
             transport=transport,
         )
+        resolve_external_secret_bindings(context)
         assert_runtime_context_ready(context, server=server, profile=profile)
         command, args, env, cwd = launch_config_from_context(context)
     except AccessTokenExpired:
@@ -367,6 +369,184 @@ def launch_config_from_context(
         raise ValueError("Runtime context included an invalid working directory.")
 
     return command, list(args), env, cwd
+
+
+def resolve_external_secret_bindings(context: dict[str, Any]) -> None:
+    """Resolve runtime-only Vault bindings locally without persisting plaintext."""
+    bindings = context.get("external_secret_bindings")
+    if bindings is None:
+        return
+    if not isinstance(bindings, list):
+        raise ValueError("Runtime context included invalid external secret bindings.")
+
+    for binding in bindings:
+        if not isinstance(binding, dict):
+            raise ValueError(
+                "Runtime context included an invalid external secret binding."
+            )
+        provider = binding.get("provider")
+        locator = binding.get("locator")
+        target = binding.get("target")
+        probe = context.get("probe_request")
+        if not all(
+            isinstance(item, dict) for item in (provider, locator, target, probe)
+        ):
+            raise ValueError("Runtime external secret binding is incomplete.")
+        assert isinstance(provider, dict)
+        assert isinstance(locator, dict)
+        assert isinstance(target, dict)
+        assert isinstance(probe, dict)
+
+        provider_id = provider.get("id")
+        if (
+            provider.get("provider_type") != "vault_kv_v2"
+            or provider.get("resolution_mode") != "runtime"
+        ):
+            raise ValueError("Runtime external secret provider is unsupported.")
+        path = locator.get("path")
+        field = locator.get("field")
+        name = target.get("name")
+        if not all(
+            isinstance(item, str) and item for item in (provider_id, path, field, name)
+        ):
+            raise ValueError("Runtime external secret binding is incomplete.")
+
+        target_type = target.get("type")
+        transport = probe.get("transport")
+        if not (
+            (target_type == "env" and transport == "stdio")
+            or (target_type == "header" and transport in {"http", "sse"})
+        ):
+            raise ValueError(
+                "Runtime external secret target does not match the selected transport."
+            )
+
+        raw_config = provider.get("config")
+        config: dict[str, Any] = (
+            {str(key): item for key, item in raw_config.items()}
+            if isinstance(raw_config, dict)
+            else {}
+        )
+        value = resolve_vault_runtime_secret(
+            provider_id=str(provider_id),
+            config=config,
+            path=str(path),
+            field=str(field),
+        )
+        if target_type == "env":
+            stdio = probe.setdefault("stdio", {})
+            if not isinstance(stdio, dict):
+                raise ValueError(
+                    "Runtime context included invalid stdio configuration."
+                )
+            env = stdio.setdefault("env", {})
+            if not isinstance(env, dict):
+                raise ValueError(
+                    "Runtime context included invalid environment variables."
+                )
+            env[str(name)] = value
+        else:
+            remote = probe.setdefault(str(transport), {})
+            if not isinstance(remote, dict):
+                raise ValueError(
+                    "Runtime context included invalid remote configuration."
+                )
+            headers = remote.setdefault("headers", {})
+            if not isinstance(headers, dict):
+                raise ValueError("Runtime context included invalid HTTP headers.")
+            headers[str(name)] = value
+
+
+def resolve_vault_runtime_secret(
+    *, provider_id: str, config: dict[str, Any], path: str, field: str
+) -> str:
+    """Read one Vault KV v2 scalar through Vault Proxy or an opt-in OS keyring token."""
+    auth_mode = os.environ.get("LIGHTNOW_VAULT_AUTH_MODE", "vault-proxy")
+    headers: dict[str, str] = {}
+    namespace = config.get("namespace")
+    if isinstance(namespace, str) and namespace:
+        headers["X-Vault-Namespace"] = namespace
+
+    address: str
+    if auth_mode == "vault-proxy":
+        address = os.environ.get("LIGHTNOW_VAULT_PROXY_URL", "http://127.0.0.1:8200")
+        parsed = urlparse(address)
+        host = parsed.hostname
+        is_loopback = host == "localhost"
+        if host is not None:
+            try:
+                is_loopback = is_loopback or ipaddress.ip_address(host).is_loopback
+            except ValueError:
+                pass
+        if parsed.scheme not in {"http", "https"} or not is_loopback:
+            raise ValueError(
+                "LIGHTNOW_VAULT_PROXY_URL must target an HTTP(S) loopback address."
+            )
+    elif auth_mode == "keyring":
+        configured_address = os.environ.get("LIGHTNOW_VAULT_ADDRESS") or config.get(
+            "address"
+        )
+        if not isinstance(configured_address, str) or not configured_address:
+            raise ValueError(
+                f"Vault address is missing for runtime provider {provider_id}."
+            )
+        address = configured_address
+        parsed = urlparse(address)
+        if parsed.scheme != "https" or parsed.hostname is None:
+            raise ValueError("Runtime Vault address must be an HTTPS origin.")
+        try:
+            import keyring  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise ValueError(
+                "OS-keyring support is not installed. Install lightnow-cli[keyring] or use Vault Proxy."
+            ) from exc
+        service = os.environ.get(
+            "LIGHTNOW_VAULT_KEYRING_SERVICE", "lightnow-proxy-vault"
+        )
+        token = keyring.get_password(service, provider_id)
+        if not isinstance(token, str) or not token:
+            raise ValueError(
+                f"OS keyring has no Vault token for runtime provider {provider_id}."
+            )
+        headers["X-Vault-Token"] = token
+    else:
+        raise ValueError("LIGHTNOW_VAULT_AUTH_MODE must be vault-proxy or keyring.")
+
+    verify: str | bool = os.environ.get("LIGHTNOW_VAULT_CA_FILE") or True
+    url = f"{address.rstrip('/')}/v1/{path.lstrip('/')}"
+    try:
+        response = httpx.get(
+            url, headers=headers, timeout=10.0, verify=verify, follow_redirects=False
+        )
+    except httpx.RequestError as exc:
+        raise ValueError(
+            f"Runtime Vault provider {provider_id} is not reachable."
+        ) from exc
+    if response.is_redirect:
+        raise ValueError(f"Runtime Vault provider {provider_id} returned a redirect.")
+    if response.status_code >= 400:
+        raise ValueError(
+            f"Runtime Vault provider {provider_id} returned HTTP {response.status_code}."
+        )
+    if len(response.content) > 64 * 1024:
+        raise ValueError(
+            f"Runtime Vault provider {provider_id} returned an oversized response."
+        )
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise ValueError(
+            f"Runtime Vault provider {provider_id} returned invalid JSON."
+        ) from exc
+    payload_data = payload.get("data") if isinstance(payload, dict) else None
+    data = payload_data if isinstance(payload_data, dict) else {}
+    secret_data = data.get("data") if isinstance(data.get("data"), dict) else data
+    value = secret_data.get(field) if isinstance(secret_data, dict) else None
+    if not isinstance(value, str | int | float | bool):
+        raise ValueError(
+            f"Runtime Vault provider {provider_id} did not return the configured scalar field."
+        )
+    return str(value)
 
 
 def json_response_or_error(response: httpx.Response) -> dict[str, Any]:
