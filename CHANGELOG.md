@@ -4,6 +4,20 @@ All notable changes to the LightNow CLI are documented here.
 
 This project follows semantic versioning.
 
+## [1.2.0](https://github.com/lightnow-ai/lightnow-cli/compare/v1.1.0...v1.2.0) (2026-07-12)
+
+
+### Features
+
+* **#5:** support runtime Vault bindings ([7750c27](https://github.com/lightnow-ai/lightnow-cli/commit/7750c27b87567012eadb6e96a934a25d5d205b0e))
+* **secrets:** support runtime Vault bindings ([7cacff6](https://github.com/lightnow-ai/lightnow-cli/commit/7cacff66c162c1c320fef5195c6acd0f3a77ca45))
+
+
+### Bug Fixes
+
+* **#4:** fix/empty mcp server sync ([a2865bf](https://github.com/lightnow-ai/lightnow-cli/commit/a2865bf21ba7fba7b7bb7115388ad45f153c3280))
+* **sync:** handle empty MCP server profiles ([065d940](https://github.com/lightnow-ai/lightnow-cli/commit/065d940ea0d7a4016705a8fb124ebdc07d204a7f))
+
 ## [1.1.0](https://github.com/lightnow-ai/lightnow-cli/compare/v1.0.5...v1.1.0) (2026-07-07)
 
 
