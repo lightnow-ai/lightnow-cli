@@ -38,6 +38,7 @@ from lightnow_cli.commands.integrations import (
     prepare_codex_local_proxy_config,
     prepare_json_local_proxy_config,
     print_import_summary,
+    read_local_runtime_secrets,
     redact,
     render_local_proxy_codex_stdio_toml,
     render_local_proxy_codex_toml,
@@ -51,7 +52,9 @@ from lightnow_cli.commands.runner import (
     fetch_runtime_context,
     json_response_or_error,
     launch_config_from_context,
+    resolve_external_secret_bindings,
     resolve_profile_server,
+    resolve_vault_runtime_secret,
     runner_failure_summary,
 )
 from lightnow_cli.main import app
@@ -2148,6 +2151,155 @@ def test_launch_config_from_context_extracts_secret_environment() -> None:
     assert args == ["run", "--rm", "-i", "sonarsource/sonarqube-mcp"]
     assert env == {"SONARQUBE_TOKEN": "top-secret"}
     assert cwd == "~/code"
+
+
+def test_runner_resolves_runtime_vault_binding_through_local_vault_proxy(
+    monkeypatch,
+) -> None:
+    """Runtime-only values are fetched locally and never require an API-held token."""
+    monkeypatch.setenv("LIGHTNOW_VAULT_PROXY_URL", "http://127.0.0.1:18200")
+    context = {
+        "probe_request": {"transport": "stdio", "stdio": {"cmd": "docker", "env": {}}},
+        "external_secret_bindings": [
+            {
+                "provider": {
+                    "id": "provider-uuid",
+                    "provider_type": "vault_kv_v2",
+                    "resolution_mode": "runtime",
+                    "config": {
+                        "address": "https://vault.customer.internal",
+                        "namespace": "customer",
+                    },
+                },
+                "locator": {"path": "secret/data/lightnow/test", "field": "token"},
+                "target": {"type": "env", "name": "API_TOKEN"},
+            }
+        ],
+    }
+    response = httpx.Response(
+        200,
+        request=httpx.Request(
+            "GET", "http://127.0.0.1:18200/v1/secret/data/lightnow/test"
+        ),
+        json={"data": {"data": {"token": "runtime-value"}}},
+    )
+
+    with patch(
+        "lightnow_cli.commands.runner.httpx.get", return_value=response
+    ) as vault_get:
+        resolve_external_secret_bindings(context)
+
+    assert context["probe_request"]["stdio"]["env"]["API_TOKEN"] == "runtime-value"
+    assert (
+        vault_get.call_args.args[0]
+        == "http://127.0.0.1:18200/v1/secret/data/lightnow/test"
+    )
+    assert vault_get.call_args.kwargs["headers"] == {"X-Vault-Namespace": "customer"}
+    assert vault_get.call_args.kwargs["follow_redirects"] is False
+
+
+def test_runner_rejects_runtime_binding_target_before_contacting_vault() -> None:
+    context = {
+        "probe_request": {"transport": "stdio", "stdio": {"cmd": "docker"}},
+        "external_secret_bindings": [
+            {
+                "provider": {
+                    "id": "provider-uuid",
+                    "provider_type": "vault_kv_v2",
+                    "resolution_mode": "runtime",
+                    "config": {},
+                },
+                "locator": {"path": "secret/data/lightnow/test", "field": "token"},
+                "target": {"type": "header", "name": "Authorization"},
+            }
+        ],
+    }
+
+    with patch("lightnow_cli.commands.runner.httpx.get") as vault_get:
+        try:
+            resolve_external_secret_bindings(context)
+        except ValueError as exc:
+            assert "does not match" in str(exc)
+        else:
+            raise AssertionError("expected ValueError")
+
+    vault_get.assert_not_called()
+
+
+def test_runtime_vault_resolution_fails_closed_for_unsafe_proxy_and_responses(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("LIGHTNOW_VAULT_PROXY_URL", "http://vault.attacker.example:8200")
+    try:
+        resolve_vault_runtime_secret(
+            provider_id="provider-uuid",
+            config={},
+            path="secret/data/test",
+            field="token",
+        )
+    except ValueError as exc:
+        assert "loopback" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+    monkeypatch.setenv("LIGHTNOW_VAULT_PROXY_URL", "http://127.0.0.1:8200")
+    responses = [
+        (
+            httpx.Response(302, headers={"Location": "http://169.254.169.254"}),
+            "redirect",
+        ),
+        (httpx.Response(503), "HTTP 503"),
+        (httpx.Response(200, content=b"x" * (64 * 1024 + 1)), "oversized"),
+        (httpx.Response(200, content=b"not-json"), "invalid JSON"),
+        (httpx.Response(200, json={"data": {"data": {}}}), "scalar field"),
+    ]
+    for response, expected in responses:
+        response.request = httpx.Request(
+            "GET", "http://127.0.0.1:8200/v1/secret/data/test"
+        )
+        with patch("lightnow_cli.commands.runner.httpx.get", return_value=response):
+            try:
+                resolve_vault_runtime_secret(
+                    provider_id="provider-uuid",
+                    config={},
+                    path="secret/data/test",
+                    field="token",
+                )
+            except ValueError as exc:
+                assert expected in str(exc)
+            else:
+                raise AssertionError("expected ValueError")
+
+
+def test_local_proxy_sync_preserves_runtime_secret_provider_mappings(tmp_path) -> None:
+    config_path = tmp_path / "codex.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "runtime_secrets": {
+                    "providers": {
+                        "provider-uuid": {
+                            "auth_mode": "vault-proxy",
+                            "vault_proxy_url": "http://127.0.0.1:18200",
+                        }
+                    }
+                }
+            }
+        )
+    )
+
+    preserved = read_local_runtime_secrets(config_path)
+    rendered = yaml.safe_load(
+        build_local_proxy_config(
+            local_proxy_url="http://127.0.0.1:8765/mcp",
+            profile="default",
+            registry_api_url="https://registry-api.lightnow.ai",
+            tenant=None,
+            runtime_secrets=preserved,
+        )
+    )
+
+    assert rendered["runtime_secrets"] == preserved
 
 
 def test_runner_context_readiness_reports_missing_inputs() -> None:
