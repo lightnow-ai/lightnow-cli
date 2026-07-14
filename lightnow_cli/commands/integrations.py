@@ -6,10 +6,12 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
 import tomllib
+import uuid
 from pathlib import Path
 from typing import Any, Optional, cast
 from urllib.parse import urlparse
@@ -325,6 +327,8 @@ def sync(
     proxy_target = (
         local_proxy_config_path or default_local_proxy_config_path(client)
     ).expanduser()
+    device_installation_id: Optional[str] = None
+    client_instance_id: Optional[str] = None
     settings_local_proxy_summary: dict[str, Any] = {}
     removed_direct_servers: list[str] = []
     remove_unmanaged_client_servers = local_proxy
@@ -360,6 +364,12 @@ def sync(
                 profile = str(settings_payload["defaultProfile"])
 
         if local_proxy:
+            device_installation_id = (
+                str(uuid.uuid4())
+                if dry_run
+                else config_manager.get_or_create_device_installation_id()
+            )
+            client_instance_id = read_or_create_client_instance_id(proxy_target)
             generated = build_local_proxy_export(
                 client=client,
                 export_format=export_format,
@@ -378,6 +388,8 @@ def sync(
                 local_proxy_settings=(
                     settings_local_proxy_summary if from_settings else None
                 ),
+                device_installation_id=device_installation_id,
+                client_instance_id=client_instance_id,
             )
         elif runner:
             profile_payload = fetch_profile_servers(
@@ -509,6 +521,46 @@ def sync(
         write_json_manifest(manifest, extract_json_managed(generated))
     if local_proxy and client == "vscode":
         report_vscode_virtual_tools(target.with_name("settings.json"))
+
+    if local_proxy:
+        assert device_installation_id is not None
+        assert client_instance_id is not None
+        proxy_payload = yaml.safe_load(proxy_config)
+        local_proxy_payload = (
+            proxy_payload.get("local_proxy")
+            if isinstance(proxy_payload, dict)
+            else None
+        )
+        telemetry_enabled = not (
+            isinstance(local_proxy_payload, dict)
+            and local_proxy_payload.get("telemetry_enabled") is False
+        )
+        if telemetry_enabled:
+            try:
+                register_runtime_device_client(
+                    api_url=registry_api_url,
+                    token=bearer_token,
+                    tenant=effective_tenant,
+                    installation_id=device_installation_id,
+                    client_instance_id=client_instance_id,
+                    client=client,
+                    profile=profile,
+                    transport=(
+                        "streamable-http"
+                        if local_proxy_transport == "http"
+                        else "stdio"
+                    ),
+                )
+            except (AccessTokenExpired, AuthError, ValueError) as exc:
+                console.print(
+                    "[bold red]Integration sync incomplete:[/bold red] "
+                    f"local files were written, but device registration failed: {exc}"
+                )
+                console.print(
+                    "Re-run the same sync after Registry API access is restored; "
+                    "the device and client identifiers will remain stable."
+                )
+                raise typer.Exit(1) from exc
 
     console.print(f"[green]Synced {client} profile {profile} to {target}[/green]")
     if local_proxy:
@@ -841,6 +893,8 @@ def build_local_proxy_config(
     tenant: Optional[str],
     registry_ca_file: Optional[Path] = None,
     local_proxy_settings: Optional[dict[str, Any]] = None,
+    device_installation_id: Optional[str] = None,
+    client_instance_id: Optional[str] = None,
 ) -> str:
     """Render the local LightNow Proxy config for LightNow-managed profile sync."""
     parsed = urlparse(local_proxy_url)
@@ -879,6 +933,11 @@ def build_local_proxy_config(
         "client_transport": (
             "streamable-http" if local_proxy_transport == "http" else "stdio"
         ),
+        "device_installation_id": device_installation_id,
+        "client_instance_id": client_instance_id,
+        "device_hostname": socket.gethostname(),
+        "device_platform": runtime_device_platform(),
+        "telemetry_enabled": True,
     }
     if isinstance(local_proxy_settings, dict):
         local_proxy_config["telemetry_enabled"] = (
@@ -911,6 +970,85 @@ def build_local_proxy_config(
         "upstreams": {},
     }
     return cast(str, yaml.safe_dump(payload, sort_keys=False))
+
+
+def runtime_device_platform() -> str:
+    """Map the current platform to the public device inventory vocabulary."""
+    if sys.platform == "darwin":
+        return "macos"
+    if sys.platform == "win32":
+        return "windows"
+    if sys.platform.startswith("linux"):
+        return "linux"
+    return "unknown"
+
+
+def read_or_create_client_instance_id(path: Path) -> str:
+    """Reuse a client instance id from an existing proxy config when possible."""
+    if path.exists():
+        try:
+            payload = yaml.safe_load(path.read_text())
+            local_proxy = (
+                payload.get("local_proxy") if isinstance(payload, dict) else None
+            )
+            candidate = (
+                local_proxy.get("client_instance_id")
+                if isinstance(local_proxy, dict)
+                else None
+            )
+            if isinstance(candidate, str):
+                return str(uuid.UUID(candidate))
+        except (OSError, ValueError, yaml.YAMLError):
+            pass
+    return str(uuid.uuid4())
+
+
+def register_runtime_device_client(
+    *,
+    api_url: str,
+    token: str,
+    tenant: Optional[str],
+    installation_id: str,
+    client_instance_id: str,
+    client: str,
+    profile: str,
+    transport: str,
+) -> None:
+    """Register the observed Local Proxy binding after both local files exist."""
+    url = (
+        f"{api_url.rstrip('/')}/integrations/devices/{installation_id}"
+        f"/clients/{client_instance_id}"
+    )
+    try:
+        response = request_with_refresh(
+            "PUT",
+            url,
+            json={
+                "device": {
+                    "reported_hostname": socket.gethostname(),
+                    "platform": runtime_device_platform(),
+                },
+                "client": {
+                    "name": client,
+                    "version": None,
+                    "profile": profile,
+                    "runner_name": "lightnow-local-proxy",
+                    "runner_version": None,
+                    "transport": transport,
+                },
+            },
+            headers={"Accept": "application/json"},
+            token=token,
+            tenant=tenant,
+            timeout=20.0,
+        )
+    except httpx.RequestError as exc:
+        raise ValueError(f"Network error: {exc}") from exc
+
+    if response.status_code == 401:
+        raise authentication_error_from_response(response)
+    if response.status_code >= 400:
+        raise ValueError(f"HTTP {response.status_code}: {redact(response.text)}")
 
 
 def build_runner_export(

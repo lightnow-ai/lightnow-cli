@@ -3,6 +3,7 @@
 import json
 import os
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -31,6 +32,7 @@ class Config(BaseModel):
     context_type: str = Field(default="personal")
     context_tenant: Optional[str] = None
     context_label: Optional[str] = None
+    device_installation_id: Optional[str] = None
 
 
 class ConfigManager:
@@ -191,6 +193,20 @@ class ConfigManager:
         if config.context_type == "tenant":
             return config.context_label or config.context_tenant or "Organization"
         return "Personal"
+
+    def get_or_create_device_installation_id(self) -> str:
+        """Return the stable, protected identifier for this CLI installation."""
+        config = self.load_config()
+        if config.device_installation_id:
+            try:
+                return str(uuid.UUID(config.device_installation_id))
+            except ValueError:
+                pass
+
+        config.device_installation_id = str(uuid.uuid4())
+        self.save_config(config)
+        assert config.device_installation_id is not None
+        return config.device_installation_id
 
 
 # Global config manager instance
