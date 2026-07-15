@@ -96,10 +96,94 @@ def test_token_methods(config_manager):
     assert config.refresh_token == "refresh-token"
     assert config.user_info == {"sub": "456"}
 
+
+def test_persist_current_session_is_stable_per_issuer_and_subject(config_manager):
+    config_manager.save_config(
+        Config(
+            access_token="access",
+            refresh_token="refresh",
+            issuer="https://auth.example.test/realms/example",
+            client_id="lightnow-cli",
+            user_info={"sub": "user-1", "email": "developer@example.test"},
+        )
+    )
+
+    first = config_manager.persist_current_session()
+    config_manager.load_config().access_token = "new-access"
+    second = config_manager.persist_current_session()
+
+    assert first["session_id"] == second["session_id"]
+    assert first["path"] == second["path"]
+    payload = json.loads(Path(first["path"]).read_text())
+    assert payload["access_token"] == "new-access"
+    assert payload["subject"] == "user-1"
+    assert payload["account_label"] == "developer@example.test"
+    assert config_manager.load_config().active_session_id == first["session_id"]
+    assert Path(first["path"]).stat().st_mode & 0o777 == 0o600
+
+
+def test_active_named_session_is_token_source_of_truth(config_manager):
+    config_manager.save_config(
+        Config(
+            access_token="access",
+            refresh_token="refresh",
+            issuer="https://auth.example.test/realms/example",
+            user_info={"sub": "user-1"},
+        )
+    )
+    binding = config_manager.persist_current_session()
+    session_path = Path(binding["path"])
+    payload = json.loads(session_path.read_text())
+    payload["access_token"] = "proxy-refreshed-access"
+    payload["refresh_token"] = "proxy-refreshed-refresh"
+    session_path.write_text(json.dumps(payload))
+
+    config_manager._config = None
+    config = config_manager.load_config()
+
+    assert config.access_token == "proxy-refreshed-access"
+    assert config.refresh_token == "proxy-refreshed-refresh"
+
+
+def test_cli_refresh_updates_active_named_session(config_manager):
+    config_manager.save_config(
+        Config(
+            access_token="access",
+            refresh_token="refresh",
+            issuer="https://auth.example.test/realms/example",
+            user_info={"sub": "user-1"},
+        )
+    )
+    binding = config_manager.persist_current_session()
+
+    config_manager.set_token("cli-refreshed-access", "cli-refreshed-refresh")
+
+    payload = json.loads(Path(binding["path"]).read_text())
+    assert payload["access_token"] == "cli-refreshed-access"
+    assert payload["refresh_token"] == "cli-refreshed-refresh"
+
+
+def test_persist_current_session_separates_environments(config_manager):
+    config = Config(
+        access_token="prod-access",
+        issuer="https://auth.lightnow.ai/realms/lightnow",
+        user_info={"sub": "user-1"},
+    )
+    config_manager.save_config(config)
+    production = config_manager.persist_current_session()
+    config.issuer = "https://auth.lightnow.local/realms/lightnow-local"
+    config.access_token = "local-access"
+    config_manager.save_config(config)
+    local = config_manager.persist_current_session()
+
+    assert production["session_id"] != local["session_id"]
+    assert production["path"] != local["path"]
+
     # Clear token
     config_manager.clear_token()
     assert config_manager.get_token() is None
     assert config_manager.load_config().refresh_token is None
+    assert config_manager.load_config().active_session_id is None
 
 
 def test_set_token_clears_cached_user_info(config_manager):

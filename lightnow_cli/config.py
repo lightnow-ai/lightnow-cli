@@ -1,5 +1,6 @@
 """Configuration and token management."""
 
+import hashlib
 import json
 import os
 import tempfile
@@ -7,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import typer
+from filelock import FileLock
 from pydantic import BaseModel, Field
 
 DEFAULT_ISSUER = "https://auth.lightnow.ai/realms/lightnow"
@@ -27,6 +29,7 @@ class Config(BaseModel):
     client_id: Optional[str] = Field(default=DEFAULT_CLIENT_ID)
     registry_api_url: Optional[str] = Field(default=DEFAULT_REGISTRY_API_URL)
     admin_api_url: Optional[str] = Field(default=DEFAULT_ADMIN_API_URL)
+    active_session_id: Optional[str] = Field(default=None, pattern=r"^[a-f0-9]{24}$")
     user_info: Optional[Dict[str, Any]] = None
     context_type: str = Field(default="personal")
     context_tenant: Optional[str] = None
@@ -46,6 +49,11 @@ class ConfigManager:
         self.config_dir.mkdir(mode=0o700, exist_ok=True)
         self.config_dir.chmod(0o700)
 
+    @property
+    def sessions_dir(self) -> Path:
+        """Return the private directory containing account-bound sessions."""
+        return self.config_dir / "sessions"
+
     def load_config(self) -> Config:
         """Load configuration from file."""
         if self._config is not None:
@@ -63,7 +71,28 @@ class ConfigManager:
                 typer.echo(f"Warning: Failed to load config file: {e}", err=True)
 
         self._config = Config(**config_data)
+        self._load_active_session_tokens(self._config)
         return self._config
+
+    def _load_active_session_tokens(self, config: Config) -> None:
+        """Overlay tokens from the named session shared with active proxies."""
+        if not config.active_session_id:
+            return
+        session_path = self.sessions_dir / f"{config.active_session_id}.json"
+        try:
+            session = json.loads(session_path.read_text())
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return
+        if not isinstance(session, dict):
+            return
+        if session.get("issuer") != (config.issuer or DEFAULT_ISSUER):
+            return
+        access_token = session.get("access_token")
+        refresh_token = session.get("refresh_token")
+        if isinstance(access_token, str) and access_token:
+            config.access_token = access_token
+        if isinstance(refresh_token, str) and refresh_token:
+            config.refresh_token = refresh_token
 
     def save_config(self, config: Config) -> None:
         """Save configuration to file."""
@@ -123,6 +152,8 @@ class ConfigManager:
         token: str,
         refresh_token: Optional[str] = None,
         user_info: Optional[Dict[str, Any]] = None,
+        *,
+        update_active_session: bool = True,
     ) -> None:
         """Set access token, refresh token and optionally user info."""
         config = self.load_config()
@@ -130,13 +161,100 @@ class ConfigManager:
         if refresh_token is not None:
             config.refresh_token = refresh_token
         config.user_info = user_info
+        if update_active_session and config.active_session_id:
+            session_path = self.sessions_dir / f"{config.active_session_id}.json"
+            with FileLock(f"{session_path}.lock"):
+                try:
+                    session = json.loads(session_path.read_text())
+                except (FileNotFoundError, json.JSONDecodeError, OSError):
+                    session = None
+                if isinstance(session, dict):
+                    session["access_token"] = token
+                    if refresh_token is not None:
+                        session["refresh_token"] = refresh_token
+                    self._atomic_write_json(session_path, session)
+        elif not update_active_session:
+            config.active_session_id = None
         self.save_config(config)
+
+    def persist_current_session(
+        self, user_info: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, str]:
+        """Persist the active login under a stable issuer-and-subject identity."""
+        config = self.load_config()
+        identity = user_info or config.user_info or {}
+        subject = identity.get("sub")
+        if not isinstance(subject, str) or not subject:
+            raise ValueError("The current LightNow session has no subject.")
+        if not config.access_token:
+            raise ValueError("The current LightNow session has no access token.")
+        issuer = config.issuer or DEFAULT_ISSUER
+        client_id = config.client_id or DEFAULT_CLIENT_ID
+        session_id = hashlib.sha256(f"{issuer}\0{subject}".encode()).hexdigest()[:24]
+        account_label = next(
+            (
+                str(identity[key])
+                for key in ("name", "preferred_username", "email")
+                if identity.get(key)
+            ),
+            subject,
+        )
+        session_path = self.sessions_dir / f"{session_id}.json"
+        payload = {
+            "version": 1,
+            "session_id": session_id,
+            "subject": subject,
+            "account_label": account_label,
+            "issuer": issuer,
+            "client_id": client_id,
+            "access_token": config.access_token,
+            "refresh_token": config.refresh_token,
+        }
+        with FileLock(f"{session_path}.lock"):
+            self._atomic_write_json(session_path, payload)
+        config.active_session_id = session_id
+        config.user_info = dict(identity)
+        self.save_config(config)
+        return {
+            "session_id": session_id,
+            "path": str(session_path),
+            "issuer": issuer,
+            "subject": subject,
+            "account_label": account_label,
+        }
+
+    def _atomic_write_json(self, path: Path, payload: Dict[str, Any]) -> None:
+        """Write a private JSON file atomically without exposing credentials."""
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path.parent.chmod(0o700)
+        fd: Optional[int] = None
+        tmp_path: Optional[Path] = None
+        try:
+            fd, raw_tmp_path = tempfile.mkstemp(
+                prefix=f".{path.name}.", suffix=".tmp", dir=path.parent, text=True
+            )
+            tmp_path = Path(raw_tmp_path)
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                fd = None
+                json.dump(payload, handle, indent=2)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_path, path)
+            path.chmod(0o600)
+        finally:
+            if fd is not None:
+                os.close(fd)
+            if tmp_path is not None and tmp_path.exists():
+                tmp_path.unlink()
 
     def clear_token(self) -> None:
         """Clear stored access token and account-scoped context."""
         config = self.load_config()
         config.access_token = None
         config.refresh_token = None
+        config.active_session_id = None
         config.user_info = None
         config.context_type = "personal"
         config.context_tenant = None
