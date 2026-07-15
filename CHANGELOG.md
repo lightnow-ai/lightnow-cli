@@ -4,6 +4,26 @@ All notable changes to the LightNow CLI are documented here.
 
 This project follows semantic versioning.
 
+## [1.3.0](https://github.com/lightnow-ai/lightnow-cli/compare/v1.2.0...v1.3.0) (2026-07-15)
+
+
+### Features
+
+* **#7:** support account-bound proxy connections ([11b2f5a](https://github.com/lightnow-ai/lightnow-cli/commit/11b2f5a3806e2b9f67637e231783692aacdb78de))
+* **#9:** device control plane ([0d1db03](https://github.com/lightnow-ai/lightnow-cli/commit/0d1db033be28b23e45d9ae38bc0c4754a0cd7380))
+* **devices:** register local proxy client inventory ([ebcbe95](https://github.com/lightnow-ai/lightnow-cli/commit/ebcbe95a099d7b203a89c5886a5d90b300a47e38))
+* support account-bound proxy connections ([6d9f3ad](https://github.com/lightnow-ai/lightnow-cli/commit/6d9f3ad8f633182e57ca8291a9eb297a6330fd72))
+
+
+### Bug Fixes
+
+* address account-bound session review ([6e41fd8](https://github.com/lightnow-ai/lightnow-cli/commit/6e41fd881789a0f4ac287fd4abece0c69a964093))
+
+
+### Documentation
+
+* **devices:** explain control plane registration ([f4329f5](https://github.com/lightnow-ai/lightnow-cli/commit/f4329f559ff43f4b501b500b19c3b40f57ad94bf))
+
 ## [1.2.0](https://github.com/lightnow-ai/lightnow-cli/compare/v1.1.0...v1.2.0) (2026-07-12)
 
 
