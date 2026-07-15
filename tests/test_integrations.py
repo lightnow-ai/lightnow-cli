@@ -1110,6 +1110,59 @@ def test_sync_reuses_ids_and_registers_only_after_writing_files(
     )
 
 
+def test_sync_registers_distinct_clients_under_one_installation(
+    stub_device_registration,
+) -> None:
+    """Per-client proxy configs get distinct ids under the stable CLI installation."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with patch(
+            "lightnow_cli.commands.integrations.require_access_token",
+            return_value="token",
+        ):
+            codex = runner.invoke(
+                app,
+                [
+                    "sync",
+                    "--client",
+                    "codex",
+                    "--local-proxy",
+                    "--yes",
+                    "--config-path",
+                    str(root / "config.toml"),
+                    "--local-proxy-config-path",
+                    str(root / "codex.yaml"),
+                ],
+            )
+            claude = runner.invoke(
+                app,
+                [
+                    "sync",
+                    "--client",
+                    "claude-desktop",
+                    "--local-proxy",
+                    "--yes",
+                    "--config-path",
+                    str(root / "claude.json"),
+                    "--local-proxy-config-path",
+                    str(root / "claude.yaml"),
+                ],
+            )
+
+    assert codex.exit_code == claude.exit_code == 0
+    codex_call, claude_call = stub_device_registration.call_args_list
+    assert codex_call.kwargs["installation_id"] == claude_call.kwargs["installation_id"]
+    assert (
+        codex_call.kwargs["client_instance_id"]
+        != claude_call.kwargs["client_instance_id"]
+    )
+    assert {codex_call.kwargs["client"], claude_call.kwargs["client"]} == {
+        "codex",
+        "claude-desktop",
+    }
+
+
 def test_sync_keeps_files_and_fails_when_device_registration_fails(
     stub_device_registration,
 ) -> None:
