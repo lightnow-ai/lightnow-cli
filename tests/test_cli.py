@@ -456,8 +456,14 @@ def test_validate_command_no_files(runner):
 @patch("lightnow_cli.commands.auth.fetch_user_info")
 @patch("lightnow_cli.config.config_manager.set_auth_config")
 @patch("lightnow_cli.config.config_manager.set_token")
+@patch("lightnow_cli.config.config_manager.persist_current_session")
 def test_login_command_success(
-    mock_set_token, mock_set_auth_config, mock_fetch_user_info, mock_device_flow, runner
+    mock_persist_session,
+    mock_set_token,
+    mock_set_auth_config,
+    mock_fetch_user_info,
+    mock_device_flow,
+    runner,
 ):
     """Test successful login command."""
     # Mock successful device code flow
@@ -483,21 +489,31 @@ def test_login_command_success(
     mock_device_flow.assert_called_once_with(DEFAULT_ISSUER, DEFAULT_CLIENT_ID)
     mock_fetch_user_info.assert_called_once_with(DEFAULT_ISSUER, "mock-access-token")
     mock_set_token.assert_called_once()
+    mock_persist_session.assert_called_once_with(mock_fetch_user_info.return_value)
 
 
 @patch("lightnow_cli.commands.auth.device_code_flow")
 @patch("lightnow_cli.commands.auth.fetch_user_info")
 @patch("lightnow_cli.config.config_manager.set_auth_config")
 @patch("lightnow_cli.config.config_manager.set_token")
+@patch("lightnow_cli.config.config_manager.persist_current_session")
 def test_login_command_local_profile(
-    mock_set_token, mock_set_auth_config, mock_fetch_user_info, mock_device_flow, runner
+    mock_persist_session,
+    mock_set_token,
+    mock_set_auth_config,
+    mock_fetch_user_info,
+    mock_device_flow,
+    runner,
 ):
     """Local login uses local LightNow endpoints without exposing OIDC internals."""
     mock_device_flow.return_value = {
         "access_token": "mock-access-token",
         "refresh_token": "mock-refresh-token",
     }
-    mock_fetch_user_info.return_value = {"email": "test@lightnow.local"}
+    mock_fetch_user_info.return_value = {
+        "sub": "local-user",
+        "email": "test@lightnow.local",
+    }
 
     result = runner.invoke(app, ["login", "--local"])
 
@@ -512,6 +528,7 @@ def test_login_command_local_profile(
     mock_device_flow.assert_called_once_with(LOCAL_ISSUER, DEFAULT_CLIENT_ID)
     mock_fetch_user_info.assert_called_once_with(LOCAL_ISSUER, "mock-access-token")
     mock_set_token.assert_called_once()
+    mock_persist_session.assert_called_once_with(mock_fetch_user_info.return_value)
 
 
 @patch("lightnow_cli.config.config_manager.load_config")

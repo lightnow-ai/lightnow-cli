@@ -113,6 +113,40 @@ Then sync your client:
 lightnow sync --client codex --local-proxy
 ```
 
+### Multiple accounts and organizations
+
+Each Local Proxy connection can have its own client alias, LightNow login,
+profile and personal or tenant scope. The sync command binds the connection to
+the account that is signed in at that moment; signing in with another account
+later does not silently move an existing connection.
+Connection aliases are either `lightnow` or start with `lightnow-` or
+`lightnow_`, so they remain TOML-safe and distinguishable from unmanaged local
+MCP servers.
+
+For example, configure personal and organization connections side by side:
+
+```bash
+lightnow login
+lightnow sync --client codex --local-proxy \
+  --connection lightnow-personal --profile default
+
+# Sign in with the organization account before creating this connection.
+lightnow login
+lightnow sync --client codex --local-proxy \
+  --connection lightnow-acme --tenant <tenant-id> --profile engineering
+```
+
+Codex then exposes both `lightnow-personal` and `lightnow-acme`. Re-run sync
+with the same `--connection` value to update that connection. Account-bound
+sessions are stored separately under `~/.lightnow/sessions/`; proxy YAML files
+contain only their path and expected identity, never access or refresh tokens.
+
+Use `lightnow config-status --client codex --json` to inspect all connections,
+including their non-secret account, scope, profile and session-binding status.
+Signing in to another account preserves existing bound sessions. An explicit
+`lightnow logout` removes the active account's named session, so proxies bound
+to that account stop authenticating until it is signed in and synced again.
+
 Other common clients:
 
 ```bash

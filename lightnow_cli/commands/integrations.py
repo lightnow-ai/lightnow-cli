@@ -32,6 +32,7 @@ from .auth import (
     ACCESS_TOKEN_EXPIRED_MESSAGE,
     AccessTokenExpired,
     AuthError,
+    get_user_info,
     require_access_token,
 )
 from .runner import fetch_profile_servers
@@ -110,6 +111,7 @@ LOCAL_LIGHTNOW_CA_RELATIVE_PATH = Path(".local-runtime/certs/lightnow-local-ca.c
 LOCAL_PROXY_EXECUTABLE = "lightnow-proxy"
 LEGACY_LOCAL_PROXY_EXECUTABLE = "mcp-proxy"
 LIGHTNOW_PROXY_ALIASES = {"lightnow", "LightNow"}
+CONNECTION_ALIAS_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,62}[A-Za-z0-9])?$")
 CLIENT_INTERNAL_MCP_SERVERS = {
     "codex": {"node_repl"},
 }
@@ -129,10 +131,57 @@ MCP_PROXY_INSTALL_HINT = (
 )
 
 
-def default_local_proxy_config_path(client: str) -> Path:
+def validate_connection_alias(alias: str) -> str:
+    """Return a client-safe connection alias or fail with an actionable error."""
+    normalized = alias.lower()
+    has_lightnow_prefix = normalized == "lightnow" or normalized.startswith(
+        ("lightnow-", "lightnow_")
+    )
+    if not CONNECTION_ALIAS_RE.fullmatch(alias) or not has_lightnow_prefix:
+        raise ValueError(
+            "Connection alias must be 'lightnow' or start with 'lightnow-' or "
+            "'lightnow_', and use at most 64 letters, numbers, underscores or hyphens."
+        )
+    return alias
+
+
+def is_lightnow_connection_alias(alias: str) -> bool:
+    try:
+        validate_connection_alias(alias)
+    except ValueError:
+        return False
+    return True
+
+
+def default_local_proxy_config_path(
+    client: str, connection_alias: str = "lightnow"
+) -> Path:
     """Return the per-client Local Proxy config path used by sync."""
     safe_client = re.sub(r"[^A-Za-z0-9_.-]+", "-", client).strip("-") or "client"
+    if connection_alias != "lightnow":
+        safe_connection = validate_connection_alias(connection_alias)
+        return DEFAULT_LOCAL_PROXY_CONFIG_DIR / f"{safe_client}-{safe_connection}.yaml"
     return DEFAULT_LOCAL_PROXY_CONFIG_DIR / f"{safe_client}.yaml"
+
+
+def read_or_create_connection_id(path: Path) -> str:
+    """Reuse the connection UUID stored in an existing proxy config."""
+    if path.exists():
+        try:
+            payload = yaml.safe_load(path.read_text())
+            local_proxy = (
+                payload.get("local_proxy") if isinstance(payload, dict) else None
+            )
+            candidate = (
+                local_proxy.get("connection_id")
+                if isinstance(local_proxy, dict)
+                else None
+            )
+            if isinstance(candidate, str):
+                return str(uuid.UUID(candidate))
+        except (OSError, ValueError, yaml.YAMLError):
+            pass
+    return str(uuid.uuid4())
 
 
 def default_local_proxy_profile_config_path(profile: str = "default") -> Path:
@@ -144,11 +193,16 @@ def default_local_proxy_profile_config_path(profile: str = "default") -> Path:
 def local_proxy_default_config_alias(
     *,
     profile: str,
+    connection_alias: str = "lightnow",
     explicit_config_path: Optional[Path],
     proxy_target: Path,
 ) -> Optional[Path]:
     """Return the default health-check alias path that should mirror a sync."""
-    if explicit_config_path is not None or profile != "default":
+    if (
+        explicit_config_path is not None
+        or profile != "default"
+        or connection_alias != "lightnow"
+    ):
         return None
     alias = default_local_proxy_profile_config_path(profile).expanduser()
     if alias == proxy_target.expanduser():
@@ -340,6 +394,13 @@ def sync(
             help="Write one LightNow Local Proxy entry instead of per-server config.",
         ),
     ] = False,
+    connection: Annotated[
+        str,
+        typer.Option(
+            "--connection",
+            help="Stable MCP alias for this account, scope and profile connection.",
+        ),
+    ] = "lightnow",
     from_settings: Annotated[
         bool,
         typer.Option(
@@ -392,6 +453,10 @@ def sync(
         )
     if local_proxy_transport not in {"stdio", "http"}:
         raise_bad_argument("Unsupported Local Proxy transport", "Use stdio or http.")
+    try:
+        connection = validate_connection_alias(connection)
+    except ValueError as exc:
+        raise_bad_argument("Invalid connection alias", str(exc))
 
     default_format, default_path = CLIENT_DEFAULTS[client]
     export_format = format_ or default_format
@@ -419,7 +484,7 @@ def sync(
         )
     assert registry_api_url is not None
     proxy_target = (
-        local_proxy_config_path or default_local_proxy_config_path(client)
+        local_proxy_config_path or default_local_proxy_config_path(client, connection)
     ).expanduser()
     device_installation_id: Optional[str] = None
     client_instance_id: Optional[str] = None
@@ -429,6 +494,7 @@ def sync(
     empty_profile_existing_aliases: list[str] = []
     remove_unmanaged_client_servers = local_proxy
     policy_managed_sync = False
+    session_binding: dict[str, str] | None = None
 
     try:
         if from_settings:
@@ -460,6 +526,11 @@ def sync(
                 profile = str(settings_payload["defaultProfile"])
 
         if local_proxy:
+            active_config = config_manager.load_config()
+            if active_config.access_token == bearer_token:
+                identity = active_config.user_info or get_user_info(bearer_token)
+                if identity and identity.get("sub"):
+                    session_binding = config_manager.persist_current_session(identity)
             device_installation_id = (
                 str(uuid.uuid4())
                 if dry_run
@@ -468,6 +539,7 @@ def sync(
             client_instance_id = read_or_create_client_instance_id(proxy_target)
             proxy_default_alias = local_proxy_default_config_alias(
                 profile=profile,
+                connection_alias=connection,
                 explicit_config_path=local_proxy_config_path,
                 proxy_target=proxy_target,
             )
@@ -477,14 +549,18 @@ def sync(
                 local_proxy_url=local_proxy_url,
                 local_proxy_transport=local_proxy_transport,
                 local_proxy_config_path=proxy_target,
+                connection_alias=connection,
             )
             proxy_config = build_local_proxy_config(
                 local_proxy_url=local_proxy_url,
                 local_proxy_transport=local_proxy_transport,
                 profile=profile,
                 client=client,
+                connection_alias=connection,
+                connection_id=read_or_create_connection_id(proxy_target),
                 registry_api_url=registry_api_url,
                 tenant=effective_tenant,
+                session_binding=session_binding,
                 registry_ca_file=registry_ca_file,
                 local_proxy_settings=(
                     settings_local_proxy_summary if from_settings else None
@@ -540,11 +616,18 @@ def sync(
             and export_format == "json"
         ):
             existing = prepare_json_local_proxy_config(existing)
+        if local_proxy and export_format == "toml":
+            generated = merge_local_proxy_toml_connection(
+                existing, generated, connection
+            )
+        patch_aliases = previous_managed["aliases"]
+        if local_proxy and export_format == "json":
+            patch_aliases = ["LightNow" if connection == "lightnow" else connection]
         patched = patch_config(
             existing,
             generated,
             export_format,
-            previous_managed["aliases"],
+            patch_aliases,
             previous_managed["input_ids"],
         )
         if (
@@ -651,7 +734,17 @@ def sync(
 
     secure_write_text(target, patched, executable=export_format == "shell")
     if export_format == "json":
-        write_json_manifest(manifest, extract_json_managed(generated))
+        latest_managed = extract_json_managed(generated)
+        if local_proxy:
+            latest_managed = {
+                "aliases": sorted(
+                    set(previous_managed["aliases"] + latest_managed["aliases"])
+                ),
+                "input_ids": sorted(
+                    set(previous_managed["input_ids"] + latest_managed["input_ids"])
+                ),
+            }
+        write_json_manifest(manifest, latest_managed)
     if local_proxy and client == "vscode":
         report_vscode_virtual_tools(target.with_name("settings.json"))
 
@@ -860,6 +953,7 @@ def build_local_proxy_export(
     local_proxy_url: str,
     local_proxy_transport: str = "stdio",
     local_proxy_config_path: Optional[Path] = None,
+    connection_alias: str = "lightnow",
 ) -> str:
     """Build one client config entry that points at the LightNow Local Proxy."""
     support_error = local_proxy_support_error(
@@ -870,14 +964,20 @@ def build_local_proxy_export(
     if local_proxy_transport == "stdio":
         if client in LOCAL_PROXY_MCP_SERVERS_JSON_CLIENTS and export_format == "json":
             return render_local_proxy_mcp_servers_json(
-                local_proxy_config_path or default_local_proxy_config_path(client)
+                local_proxy_config_path
+                or default_local_proxy_config_path(client, connection_alias),
+                connection_alias,
             )
         if client in LOCAL_PROXY_VSCODE_JSON_CLIENTS and export_format == "json":
             return render_local_proxy_vscode_json(
-                local_proxy_config_path or default_local_proxy_config_path(client)
+                local_proxy_config_path
+                or default_local_proxy_config_path(client, connection_alias),
+                connection_alias,
             )
         return render_local_proxy_codex_stdio_toml(
-            local_proxy_config_path or default_local_proxy_config_path(client)
+            local_proxy_config_path
+            or default_local_proxy_config_path(client, connection_alias),
+            connection_alias,
         )
     parsed = urlparse(local_proxy_url)
     try:
@@ -890,7 +990,7 @@ def build_local_proxy_export(
         or port is None
     ):
         raise ValueError("Local Proxy URL must point to localhost.")
-    return render_local_proxy_codex_toml(local_proxy_url)
+    return render_local_proxy_codex_toml(local_proxy_url, connection_alias)
 
 
 def local_proxy_command() -> str:
@@ -950,11 +1050,13 @@ def warm_local_proxy_tools_cache(local_proxy_config_path: Path) -> None:
         console.print(f"[green]Claude Code tools cache:[/green] {summary[-1]}")
 
 
-def render_local_proxy_codex_stdio_toml(local_proxy_config_path: Path) -> str:
+def render_local_proxy_codex_stdio_toml(
+    local_proxy_config_path: Path, connection_alias: str = "lightnow"
+) -> str:
     """Render Codex TOML that starts the local LightNow MCP proxy over stdio."""
     return (
         "# Generated by LightNow. Codex starts the local LightNow MCP proxy.\n"
-        "[mcp_servers.lightnow]\n"
+        f"[mcp_servers.{validate_connection_alias(connection_alias)}]\n"
         f'command = "{LOCAL_PROXY_EXECUTABLE}"\n'
         "args = "
         + json.dumps(
@@ -970,11 +1072,17 @@ def render_local_proxy_codex_stdio_toml(local_proxy_config_path: Path) -> str:
     )
 
 
-def render_local_proxy_mcp_servers_json(local_proxy_config_path: Path) -> str:
+def render_local_proxy_mcp_servers_json(
+    local_proxy_config_path: Path, connection_alias: str = "lightnow"
+) -> str:
     """Render JSON mcpServers config that starts the local LightNow MCP proxy."""
     payload = {
         "mcpServers": {
-            "LightNow": {
+            (
+                "LightNow"
+                if connection_alias == "lightnow"
+                else validate_connection_alias(connection_alias)
+            ): {
                 "command": local_proxy_command(),
                 "args": [
                     "--config",
@@ -988,11 +1096,17 @@ def render_local_proxy_mcp_servers_json(local_proxy_config_path: Path) -> str:
     return json.dumps(payload, indent=2) + "\n"
 
 
-def render_local_proxy_vscode_json(local_proxy_config_path: Path) -> str:
+def render_local_proxy_vscode_json(
+    local_proxy_config_path: Path, connection_alias: str = "lightnow"
+) -> str:
     """Render VS Code MCP config that starts the local LightNow MCP proxy."""
     payload = {
         "servers": {
-            "LightNow": {
+            (
+                "LightNow"
+                if connection_alias == "lightnow"
+                else validate_connection_alias(connection_alias)
+            ): {
                 "type": "stdio",
                 "command": local_proxy_command(),
                 "args": [
@@ -1007,11 +1121,13 @@ def render_local_proxy_vscode_json(local_proxy_config_path: Path) -> str:
     return json.dumps(payload, indent=2) + "\n"
 
 
-def render_local_proxy_codex_toml(local_proxy_url: str) -> str:
+def render_local_proxy_codex_toml(
+    local_proxy_url: str, connection_alias: str = "lightnow"
+) -> str:
     """Render Codex TOML for one local LightNow MCP server."""
     return (
         "# Generated by LightNow. The MCP client talks only to the local LightNow proxy.\n"
-        "[mcp_servers.lightnow]\n"
+        f"[mcp_servers.{validate_connection_alias(connection_alias)}]\n"
         f"url = {json.dumps(local_proxy_url)}\n"
         'default_tools_approval_mode = "approve"\n'
     )
@@ -1023,8 +1139,11 @@ def build_local_proxy_config(
     profile: str,
     local_proxy_transport: str = "stdio",
     client: str = "codex",
+    connection_alias: str = "lightnow",
+    connection_id: Optional[str] = None,
     registry_api_url: str,
     tenant: Optional[str],
+    session_binding: Optional[dict[str, str]] = None,
     registry_ca_file: Optional[Path] = None,
     local_proxy_settings: Optional[dict[str, Any]] = None,
     device_installation_id: Optional[str] = None,
@@ -1047,8 +1166,17 @@ def build_local_proxy_config(
         "default_scope_type": "system",
         "timeout_seconds": 20,
         "use_cli_session": True,
-        "cli_config_path": str(config_manager.config_file),
     }
+    if session_binding:
+        registry_api.update(
+            {
+                "cli_session_path": session_binding["path"],
+                "expected_issuer": session_binding["issuer"],
+                "expected_subject": session_binding["subject"],
+            }
+        )
+    else:
+        registry_api["cli_config_path"] = str(config_manager.config_file)
     if tenant:
         registry_api["cli_tenant_id"] = tenant
     resolved_registry_ca_file = registry_ca_file or discover_local_lightnow_ca_file(
@@ -1059,7 +1187,12 @@ def build_local_proxy_config(
 
     local_proxy_config: dict[str, Any] = {
         "enabled": True,
+        "connection_id": connection_id or str(uuid.uuid4()),
+        "connection_alias": validate_connection_alias(connection_alias),
         "profile": profile,
+        "scope_type": "tenant" if tenant else "personal",
+        "scope_id": tenant or (session_binding or {}).get("subject"),
+        "account_label": (session_binding or {}).get("account_label"),
         "path": parsed.path or "/mcp",
         "sync_from_lightnow": True,
         "client_name": client,
@@ -1637,6 +1770,7 @@ def analyze_client_config_content(
 
     local_proxy_aliases: list[str] = []
     local_proxy_commands: list[str] = []
+    local_proxy_connections: list[dict[str, Any]] = []
     legacy_runner_servers: list[str] = []
     internal_servers: list[str] = []
     unmanaged_servers: list[str] = []
@@ -1650,24 +1784,41 @@ def analyze_client_config_content(
         args: list[Any] = raw_args if isinstance(raw_args, list) else []
         raw_url = entry.get("url")
         url: str = raw_url if isinstance(raw_url, str) else ""
-        is_proxy_alias = alias in LIGHTNOW_PROXY_ALIASES
         is_lightnow_proxy = (
             command_looks_like(command, LOCAL_PROXY_EXECUTABLE)
             or command_looks_like(command, LEGACY_LOCAL_PROXY_EXECUTABLE)
-            or is_local_proxy_url(url)
+            or (is_lightnow_connection_alias(alias) and is_local_proxy_url(url))
         )
         is_lightnow_runner = command_looks_like(command, "lightnow") and "run" in [
             str(arg) for arg in args
         ]
 
-        if is_proxy_alias and is_lightnow_proxy:
+        if is_lightnow_proxy:
             local_proxy_aliases.append(alias)
             if command:
                 local_proxy_commands.append(command)
             if command_looks_like(command, LEGACY_LOCAL_PROXY_EXECUTABLE):
                 warnings.append("legacy_mcp_proxy_command")
-            if proxy_config_path not in [str(arg) for arg in args] and command:
+            string_args = [str(arg) for arg in args]
+            configured_path: str | None = None
+            if "--config" in string_args:
+                config_index = string_args.index("--config") + 1
+                if config_index < len(string_args):
+                    configured_path = string_args[config_index]
+            if (
+                alias in LIGHTNOW_PROXY_ALIASES
+                and configured_path
+                and configured_path != proxy_config_path
+            ):
                 warnings.append("proxy_config_path_mismatch")
+            local_proxy_connections.append(
+                {
+                    "alias": alias,
+                    "command": command or None,
+                    "config_path": configured_path,
+                    "transport": "http" if url else "stdio",
+                }
+            )
             continue
         if is_lightnow_runner:
             legacy_runner_servers.append(alias)
@@ -1697,6 +1848,9 @@ def analyze_client_config_content(
         "local_proxy_present": bool(local_proxy_aliases),
         "local_proxy_aliases": sorted(local_proxy_aliases),
         "local_proxy_commands": sorted(set(local_proxy_commands)),
+        "local_proxy_connections": sorted(
+            local_proxy_connections, key=lambda item: str(item["alias"])
+        ),
         "internal_servers": sorted(internal_servers),
         "unmanaged_servers": sorted(unmanaged_servers),
         "legacy_runner_servers": sorted(legacy_runner_servers),
@@ -1707,11 +1861,27 @@ def analyze_client_config_content(
 def augment_local_proxy_posture(status: dict[str, Any]) -> dict[str, Any]:
     """Add Local Proxy runtime checks (config file, lightnow-proxy binary) to a posture."""
     warnings = [str(item) for item in status.get("warnings", [])]
+    connection_postures: list[dict[str, Any]] = []
+    raw_connections = status.get("local_proxy_connections")
+    if isinstance(raw_connections, list):
+        for raw_connection in raw_connections:
+            if isinstance(raw_connection, dict):
+                connection_postures.append(inspect_proxy_connection(raw_connection))
+    status["connections"] = connection_postures
+    for connection in connection_postures:
+        warnings.extend(str(item) for item in connection.get("warnings", []))
     expected_path = status.get("expected_proxy_config_path")
     proxy_config_path = Path(str(expected_path)).expanduser() if expected_path else None
-    proxy_config_exists = False
-    if proxy_config_path is not None:
-        proxy_config_exists = proxy_config_path.exists()
+    configured_paths = [
+        Path(str(connection["config_path"])).expanduser()
+        for connection in connection_postures
+        if connection.get("config_path")
+    ]
+    if configured_paths and (
+        proxy_config_path is None or proxy_config_path not in configured_paths
+    ):
+        proxy_config_path = configured_paths[0]
+    proxy_config_exists = proxy_config_path.exists() if proxy_config_path else False
     proxy_commands = [
         str(item) for item in status.get("local_proxy_commands", []) if str(item)
     ]
@@ -1740,6 +1910,17 @@ def augment_local_proxy_posture(status: dict[str, Any]) -> dict[str, Any]:
                 if isinstance(local_proxy, dict):
                     client_name = local_proxy.get("client_name")
                     status["local_proxy_profile"] = local_proxy.get("profile")
+                    status["local_proxy_connection_alias"] = local_proxy.get(
+                        "connection_alias"
+                    )
+                    status["local_proxy_connection_id"] = local_proxy.get(
+                        "connection_id"
+                    )
+                    status["local_proxy_scope_type"] = local_proxy.get("scope_type")
+                    status["local_proxy_scope_id"] = local_proxy.get("scope_id")
+                    status["local_proxy_account_label"] = local_proxy.get(
+                        "account_label"
+                    )
                     status["local_proxy_client_name"] = client_name
                     status["local_proxy_client_transport"] = local_proxy.get(
                         "client_transport"
@@ -1768,6 +1949,77 @@ def augment_local_proxy_posture(status: dict[str, Any]) -> dict[str, Any]:
                 warnings.append("lightnow_proxy_not_on_path")
     status["warnings"] = sorted(set(warnings))
     return status
+
+
+def inspect_proxy_connection(connection: dict[str, Any]) -> dict[str, Any]:
+    """Read one proxy config and its non-secret session binding metadata."""
+    posture = dict(connection)
+    warnings: list[str] = []
+    raw_path = connection.get("config_path")
+    if not isinstance(raw_path, str) or not raw_path:
+        posture["warnings"] = warnings
+        return posture
+    path = Path(raw_path).expanduser()
+    posture["config_path"] = str(path)
+    posture["config_exists"] = path.exists()
+    if not path.exists():
+        posture["warnings"] = ["proxy_config_missing"]
+        return posture
+    try:
+        payload = yaml.safe_load(path.read_text()) or {}
+    except (OSError, yaml.YAMLError) as exc:
+        posture["warnings"] = [f"proxy_config_read_failed:{exc.__class__.__name__}"]
+        return posture
+    local_proxy = payload.get("local_proxy") if isinstance(payload, dict) else None
+    registry_api = payload.get("registry_api") if isinstance(payload, dict) else None
+    if isinstance(local_proxy, dict):
+        for key in (
+            "connection_id",
+            "connection_alias",
+            "account_label",
+            "scope_type",
+            "scope_id",
+            "profile",
+            "client_name",
+            "client_transport",
+        ):
+            posture[key] = local_proxy.get(key)
+    if isinstance(registry_api, dict):
+        session_path_value = registry_api.get("cli_session_path")
+        posture["expected_issuer"] = registry_api.get("expected_issuer")
+        posture["expected_subject"] = registry_api.get("expected_subject")
+        posture["bound_session"] = isinstance(session_path_value, str) and bool(
+            session_path_value
+        )
+        if not posture["bound_session"]:
+            session_path_value = registry_api.get("cli_config_path")
+            warnings.append("legacy_global_session_binding")
+        if isinstance(session_path_value, str) and session_path_value:
+            session_path = Path(session_path_value).expanduser()
+            posture["session_exists"] = session_path.exists()
+            if not session_path.exists():
+                warnings.append("session_missing")
+            else:
+                try:
+                    session = json.loads(session_path.read_text())
+                except (OSError, json.JSONDecodeError):
+                    warnings.append("session_unreadable")
+                else:
+                    if isinstance(session, dict):
+                        actual_issuer = session.get("issuer")
+                        actual_subject = session.get("subject")
+                        if (
+                            posture.get("expected_issuer")
+                            and actual_issuer != posture["expected_issuer"]
+                        ):
+                            warnings.append("session_issuer_mismatch")
+                        if (
+                            posture.get("expected_subject")
+                            and actual_subject != posture["expected_subject"]
+                        ):
+                            warnings.append("session_subject_mismatch")
+    posture["warnings"] = sorted(set(warnings))
+    return posture
 
 
 def extract_mcp_entries(content: str, export_format: str) -> dict[str, dict[str, Any]]:
@@ -1864,6 +2116,19 @@ def warning_hint(code: str, client: str) -> Optional[str]:
             "LightNow policy is set to enforce and unmanaged MCP servers are still present; "
             f"re-run `{sync_command}` or remove the unmanaged entries."
         ),
+        "legacy_global_session_binding": (
+            "this connection follows the mutable global CLI login; re-run the sync to bind it to a named session."
+        ),
+        "session_missing": (
+            "the account-bound session file is missing; log in with the intended account and re-run the sync."
+        ),
+        "session_unreadable": "the account-bound session file cannot be read.",
+        "session_issuer_mismatch": (
+            "the saved session belongs to another LightNow environment; re-sync with the intended login."
+        ),
+        "session_subject_mismatch": (
+            "the saved session belongs to another LightNow account; re-sync with the intended login."
+        ),
     }
     return hints.get(code)
 
@@ -1911,6 +2176,21 @@ def print_config_status(status: dict[str, Any], path: Path) -> None:
     aliases = status.get("local_proxy_aliases")
     if isinstance(aliases, list) and aliases:
         console.print(f"LightNow Local Proxy entry: {', '.join(map(str, aliases))}")
+    connections = status.get("connections")
+    if isinstance(connections, list):
+        for connection in connections:
+            if not isinstance(connection, dict):
+                continue
+            label = connection.get("account_label") or "unknown account"
+            scope = connection.get("scope_type") or "unknown scope"
+            if connection.get("scope_id"):
+                scope = f"{scope}:{connection['scope_id']}"
+            console.print(
+                "Connection "
+                f"{connection.get('alias')}: account={label}, scope={scope}, "
+                f"profile={connection.get('profile') or 'unknown'}, "
+                f"issuer={connection.get('expected_issuer') or 'legacy'}"
+            )
     expected_path = status.get("expected_proxy_config_path")
     if expected_path:
         exists = status.get("proxy_config_exists")
@@ -1984,20 +2264,55 @@ TOML_TABLE_RE = re.compile(r"^\s*\[+\s*([^\]]+?)\s*\]+\s*(?:#.*)?$")
 
 
 def prepare_codex_local_proxy_config(existing: str) -> str:
-    """Remove direct Codex MCP server entries before writing Local Proxy Mode."""
-    without_managed = remove_managed_block(existing)
-    return strip_codex_mcp_server_tables(without_managed)
+    """Remove direct Codex servers while preserving existing proxy connections."""
+    entries = extract_mcp_entries(existing, "toml") if existing.strip() else {}
+    preserved = {
+        alias
+        for alias, entry in entries.items()
+        if command_looks_like(str(entry.get("command") or ""), LOCAL_PROXY_EXECUTABLE)
+        or command_looks_like(
+            str(entry.get("command") or ""), LEGACY_LOCAL_PROXY_EXECUTABLE
+        )
+        or (
+            is_lightnow_connection_alias(alias)
+            and is_local_proxy_url(str(entry.get("url") or ""))
+        )
+    }
+    return strip_codex_mcp_server_tables(existing, preserved)
 
 
 def prepare_json_local_proxy_config(existing: str) -> str:
-    """Remove direct JSON MCP server entries before writing Local Proxy Mode."""
+    """Remove direct JSON servers while preserving existing proxy connections."""
     if not existing.strip():
         return existing
     current = json.loads(existing)
     if not isinstance(current, dict):
         raise ValueError("LightNow can only sync JSON object client configs.")
-    current.pop("mcpServers", None)
-    current.pop("servers", None)
+    for key in ("mcpServers", "servers"):
+        section = current.get(key)
+        if not isinstance(section, dict):
+            continue
+        preserved = {
+            alias: entry
+            for alias, entry in section.items()
+            if isinstance(entry, dict)
+            and (
+                command_looks_like(
+                    str(entry.get("command") or ""), LOCAL_PROXY_EXECUTABLE
+                )
+                or command_looks_like(
+                    str(entry.get("command") or ""), LEGACY_LOCAL_PROXY_EXECUTABLE
+                )
+                or (
+                    is_lightnow_connection_alias(alias)
+                    and is_local_proxy_url(str(entry.get("url") or ""))
+                )
+            )
+        }
+        if preserved:
+            current[key] = preserved
+        else:
+            current.pop(key, None)
     return json.dumps(current, indent=2, ensure_ascii=False) + "\n"
 
 
@@ -2048,18 +2363,45 @@ def remove_managed_block(existing: str) -> str:
     return before.rstrip() + "\n\n" + after.lstrip()
 
 
-def strip_codex_mcp_server_tables(existing: str) -> str:
-    """Strip Codex [mcp_servers.*] TOML tables while preserving other config."""
+def strip_codex_mcp_server_tables(
+    existing: str, preserve_aliases: Optional[set[str]] = None
+) -> str:
+    """Strip Codex MCP tables except explicitly preserved proxy aliases."""
+    preserve_aliases = preserve_aliases or set()
     kept: list[str] = []
     skipping = False
     for line in existing.splitlines():
         match = TOML_TABLE_RE.match(line)
         if match:
             name = match.group(1).strip()
-            skipping = name == "mcp_servers" or name.startswith("mcp_servers.")
+            if name == "mcp_servers":
+                skipping = True
+            elif name.startswith("mcp_servers."):
+                suffix = name.removeprefix("mcp_servers.")
+                alias = suffix.split(".", 1)[0].strip('"')
+                skipping = alias not in preserve_aliases
+            else:
+                skipping = False
         if not skipping:
             kept.append(line)
     return "\n".join(kept).strip() + ("\n" if kept else "")
+
+
+def merge_local_proxy_toml_connection(
+    existing: str, generated: str, connection_alias: str
+) -> str:
+    """Update one generated TOML connection while preserving sibling connections."""
+    if BEGIN not in existing or END not in existing:
+        return generated
+    _, rest = existing.split(BEGIN, 1)
+    managed, _ = rest.split(END, 1)
+    try:
+        entries = extract_mcp_entries(managed, "toml")
+    except ValueError:
+        return generated
+    preserve = set(entries) - {connection_alias}
+    kept = strip_codex_mcp_server_tables(managed, preserve).strip()
+    return "\n\n".join(part for part in (kept, generated.strip()) if part)
 
 
 def patch_json_config(

@@ -3,6 +3,7 @@
 import json
 import tempfile
 import tomllib
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
@@ -592,6 +593,21 @@ def test_default_local_proxy_profile_config_path_is_profile_specific() -> None:
     )
 
 
+def test_named_connection_alias_must_identify_lightnow() -> None:
+    with pytest.raises(ValueError, match="must be 'lightnow'"):
+        default_local_proxy_config_path("codex", "personal")
+
+
+def test_named_connection_alias_rejects_toml_dotted_keys() -> None:
+    with pytest.raises(ValueError, match="must be 'lightnow'"):
+        default_local_proxy_config_path("codex", "lightnow.acme")
+
+
+def test_named_connection_alias_requires_a_prefix_separator() -> None:
+    with pytest.raises(ValueError, match="start with 'lightnow-'"):
+        default_local_proxy_config_path("codex", "lightnow1")
+
+
 def test_analyzes_managed_codex_local_proxy_config() -> None:
     """Posture scanner recognizes a clean Local Proxy config."""
     status = analyze_client_config_content(
@@ -604,6 +620,20 @@ def test_analyzes_managed_codex_local_proxy_config() -> None:
     assert status["status"] == "managed"
     assert status["local_proxy_present"] is True
     assert status["unmanaged_servers"] == []
+
+
+def test_analyzes_unrelated_local_http_server_as_unmanaged() -> None:
+    """A localhost MCP URL is not enough to claim a server as LightNow-owned."""
+    status = analyze_client_config_content(
+        client="codex",
+        export_format="toml",
+        content=("[mcp_servers.internal-api]\n" 'url = "http://127.0.0.1:8080/mcp"\n'),
+        expected_proxy_config_path=Path("/tmp/lightnow/codex.yaml"),
+    )
+
+    assert status["status"] == "unmanaged"
+    assert status["local_proxy_present"] is False
+    assert status["unmanaged_servers"] == ["internal-api"]
 
 
 def test_analyzes_codex_local_proxy_with_internal_node_repl_as_managed() -> None:
@@ -1439,25 +1469,22 @@ def test_sync_local_proxy_replaces_existing_codex_mcp_servers() -> None:
         "port": 8765,
         "public_url": "http://localhost:8765",
     }
-    assert proxy_payload["local_proxy"] == {
-        "enabled": True,
-        "profile": "default",
-        "path": "/mcp",
-        "sync_from_lightnow": True,
-        "client_name": "codex",
-        "client_version": None,
-        "runner_name": "lightnow-local-proxy",
-        "client_transport": "stdio",
-        "device_installation_id": proxy_payload["local_proxy"][
-            "device_installation_id"
-        ],
-        "client_instance_id": proxy_payload["local_proxy"]["client_instance_id"],
-        "device_hostname": proxy_payload["local_proxy"]["device_hostname"],
-        "device_platform": proxy_payload["local_proxy"]["device_platform"],
-        "telemetry_enabled": True,
-    }
+    assert proxy_payload["local_proxy"]["enabled"] is True
+    assert proxy_payload["local_proxy"]["profile"] == "default"
+    assert proxy_payload["local_proxy"]["path"] == "/mcp"
+    assert proxy_payload["local_proxy"]["sync_from_lightnow"] is True
+    assert proxy_payload["local_proxy"]["client_name"] == "codex"
+    assert proxy_payload["local_proxy"]["client_version"] is None
+    assert proxy_payload["local_proxy"]["runner_name"] == "lightnow-local-proxy"
+    assert proxy_payload["local_proxy"]["client_transport"] == "stdio"
+    assert proxy_payload["local_proxy"]["connection_alias"] == "lightnow"
+    assert proxy_payload["local_proxy"]["scope_type"] == "personal"
+    uuid.UUID(proxy_payload["local_proxy"]["connection_id"])
     assert proxy_payload["local_proxy"]["device_installation_id"]
     assert proxy_payload["local_proxy"]["client_instance_id"]
+    assert proxy_payload["local_proxy"]["device_hostname"]
+    assert proxy_payload["local_proxy"]["device_platform"]
+    assert proxy_payload["local_proxy"]["telemetry_enabled"] is True
     assert proxy_payload["registry_api"]["use_cli_session"] is True
     assert proxy_payload["registry_api"]["include_secrets"] is True
     assert proxy_payload["profiles"] == {"default": {}}
@@ -1506,6 +1533,68 @@ def test_sync_local_proxy_updates_default_profile_config_alias() -> None:
     assert default_exists
     assert configs_match
     assert "Updated default Local Proxy config" in result.stdout
+
+
+def test_sync_local_proxy_preserves_multiple_codex_connections() -> None:
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "config.toml"
+        personal_config = Path(tmp) / "personal.yaml"
+        tenant_config = Path(tmp) / "tenant.yaml"
+        with patch(
+            "lightnow_cli.commands.integrations.require_access_token",
+            return_value="test-token",
+        ):
+            first = runner.invoke(
+                app,
+                [
+                    "sync",
+                    "--client",
+                    "codex",
+                    "--local-proxy",
+                    "--connection",
+                    "lightnow-personal",
+                    "--local-proxy-config-path",
+                    str(personal_config),
+                    "--config-path",
+                    str(target),
+                    "--yes",
+                ],
+            )
+            second = runner.invoke(
+                app,
+                [
+                    "sync",
+                    "--client",
+                    "codex",
+                    "--local-proxy",
+                    "--connection",
+                    "lightnow-acme",
+                    "--profile",
+                    "engineering",
+                    "--tenant",
+                    "tenant-1",
+                    "--local-proxy-config-path",
+                    str(tenant_config),
+                    "--config-path",
+                    str(target),
+                    "--yes",
+                ],
+            )
+
+        payload = tomllib.loads(target.read_text())
+        tenant_payload = yaml.safe_load(tenant_config.read_text())
+
+    assert first.exit_code == 0
+    assert second.exit_code == 0
+    assert set(payload["mcp_servers"]) == {"lightnow-personal", "lightnow-acme"}
+    assert payload["mcp_servers"]["lightnow-personal"]["args"][1] == str(
+        personal_config
+    )
+    assert payload["mcp_servers"]["lightnow-acme"]["args"][1] == str(tenant_config)
+    assert tenant_payload["local_proxy"]["connection_alias"] == "lightnow-acme"
+    assert tenant_payload["local_proxy"]["scope_type"] == "tenant"
+    assert tenant_payload["local_proxy"]["scope_id"] == "tenant-1"
 
 
 def test_sync_local_proxy_replaces_existing_claude_desktop_mcp_servers() -> None:
@@ -2153,6 +2242,37 @@ def test_build_local_proxy_config_can_pin_tenant_context() -> None:
         == "https://registry-api.lightnow.local/v0.1"
     )
     assert payload["registry_api"]["cli_tenant_id"] == "tenant-uuid"
+
+
+def test_build_local_proxy_config_binds_named_session_without_tokens() -> None:
+    generated = build_local_proxy_config(
+        local_proxy_url="http://127.0.0.1:8080/mcp",
+        profile="engineering",
+        client="codex",
+        connection_alias="lightnow-acme",
+        connection_id="10d45f35-3143-482b-bda2-7f3931667049",
+        registry_api_url="https://registry-api.lightnow.ai/v0.1",
+        tenant="tenant-1",
+        session_binding={
+            "session_id": "session-1",
+            "path": "/home/developer/.lightnow/sessions/session-1.json",
+            "issuer": "https://auth.lightnow.ai/realms/lightnow",
+            "subject": "user-1",
+            "account_label": "Developer",
+        },
+    )
+
+    payload = yaml.safe_load(generated)
+
+    assert payload["local_proxy"]["connection_alias"] == "lightnow-acme"
+    assert payload["local_proxy"]["account_label"] == "Developer"
+    assert payload["local_proxy"]["scope_type"] == "tenant"
+    assert payload["registry_api"]["cli_session_path"].endswith("session-1.json")
+    assert payload["registry_api"]["expected_subject"] == "user-1"
+    assert payload["registry_api"]["expected_issuer"].endswith("/lightnow")
+    assert "cli_config_path" not in payload["registry_api"]
+    assert "access_token" not in generated
+    assert "refresh_token" not in generated
 
 
 def test_build_local_proxy_config_marks_http_client_transport() -> None:
@@ -3756,6 +3876,81 @@ def test_config_status_reports_local_proxy_policy_from_proxy_config() -> None:
     assert payload["local_proxy_allow_unmanaged_client_servers"] is False
     assert payload["local_proxy_telemetry_enabled"] is True
     assert "policy_blocks_unmanaged_servers" in payload["warnings"]
+
+
+def test_config_status_reports_multiple_bound_connections() -> None:
+    """Named proxy connections are inspected independently without legacy drift."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        session = root / "session.json"
+        session.write_text(
+            json.dumps(
+                {
+                    "issuer": "https://auth.lightnow.ai/realms/lightnow",
+                    "subject": "user-1",
+                }
+            )
+        )
+        target = root / "config.toml"
+        rendered_connections: list[str] = []
+        for alias, scope_type, scope_id in (
+            ("lightnow-personal", "personal", None),
+            ("lightnow-acme", "tenant", "tenant-1"),
+        ):
+            proxy_config = root / f"{alias}.yaml"
+            proxy_config.write_text(
+                yaml.safe_dump(
+                    {
+                        "local_proxy": {
+                            "connection_id": str(uuid.uuid4()),
+                            "connection_alias": alias,
+                            "profile": "default",
+                            "scope_type": scope_type,
+                            "scope_id": scope_id,
+                            "account_label": "Developer",
+                            "client_name": "codex",
+                            "client_transport": "stdio",
+                        },
+                        "registry_api": {
+                            "cli_session_path": str(session),
+                            "expected_issuer": (
+                                "https://auth.lightnow.ai/realms/lightnow"
+                            ),
+                            "expected_subject": "user-1",
+                        },
+                    }
+                )
+            )
+            rendered_connections.append(
+                render_local_proxy_codex_stdio_toml(proxy_config, alias)
+            )
+        target.write_text(f"{BEGIN}\n" + "\n".join(rendered_connections) + f"\n{END}\n")
+        with patch(
+            "lightnow_cli.commands.integrations.shutil.which",
+            return_value="/usr/local/bin/lightnow-proxy",
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "config-status",
+                    "--client",
+                    "codex",
+                    "--config-path",
+                    str(target),
+                    "--json",
+                ],
+            )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "managed"
+    assert payload["warnings"] == []
+    connections = {item["alias"]: item for item in payload["connections"]}
+    assert set(connections) == {"lightnow-personal", "lightnow-acme"}
+    assert connections["lightnow-personal"]["scope_type"] == "personal"
+    assert connections["lightnow-acme"]["scope_id"] == "tenant-1"
+    assert all(item["bound_session"] for item in connections.values())
 
 
 def test_config_status_prints_next_step_for_unmanaged_config() -> None:

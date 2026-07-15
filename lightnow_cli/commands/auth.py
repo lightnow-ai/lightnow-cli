@@ -412,8 +412,10 @@ def login(
         config_manager.set_token(
             token,
             refresh_token if isinstance(refresh_token, str) else None,
-            None,
+            user_info,
+            update_active_session=False,
         )
+        config_manager.persist_current_session(user_info)
 
         console.print("[bold green]✓ Authentication successful![/bold green]")
         if user_info:
