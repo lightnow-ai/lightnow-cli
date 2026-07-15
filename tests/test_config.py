@@ -52,6 +52,19 @@ def test_load_default_config(config_manager):
     assert config.admin_api_url == DEFAULT_ADMIN_API_URL
     assert config.context_type == "personal"
     assert config.context_tenant is None
+    assert config.device_installation_id is None
+
+
+def test_device_installation_id_is_stable_and_protected(config_manager):
+    """The installation id is created once in the protected CLI config."""
+    first = config_manager.get_or_create_device_installation_id()
+    second = config_manager.get_or_create_device_installation_id()
+
+    assert first == second
+    assert config_manager.config_file.stat().st_mode & 0o777 == 0o600
+
+    config_manager._config = None
+    assert config_manager.get_or_create_device_installation_id() == first
 
 
 def test_save_and_load_config(config_manager):

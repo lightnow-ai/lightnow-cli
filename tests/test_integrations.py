@@ -40,7 +40,9 @@ from lightnow_cli.commands.integrations import (
     prepare_json_local_proxy_config,
     print_import_summary,
     read_local_runtime_secrets,
+    read_or_create_client_instance_id,
     redact,
+    register_runtime_device_client,
     render_local_proxy_codex_stdio_toml,
     render_local_proxy_codex_toml,
     render_runner_config,
@@ -59,6 +61,21 @@ from lightnow_cli.commands.runner import (
     runner_failure_summary,
 )
 from lightnow_cli.main import app
+
+
+@pytest.fixture(autouse=True)
+def stub_device_registration():
+    """Keep existing Local Proxy sync tests isolated from the Registry API."""
+    with (
+        patch(
+            "lightnow_cli.commands.integrations.register_runtime_device_client"
+        ) as registration,
+        patch(
+            "lightnow_cli.commands.integrations.config_manager.get_or_create_device_installation_id",
+            return_value="11111111-1111-4111-8111-111111111111",
+        ),
+    ):
+        yield registration
 
 
 def test_patches_toml_without_removing_user_config() -> None:
@@ -1096,6 +1113,242 @@ def test_sync_local_proxy_dry_run_writes_one_codex_entry_without_fetching_export
     assert not target.exists()
 
 
+def test_client_instance_id_is_stable_for_an_existing_proxy_config() -> None:
+    """A generated proxy configuration keeps its own client instance identity."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "codex.yaml"
+        first = read_or_create_client_instance_id(path)
+        path.write_text(yaml.safe_dump({"local_proxy": {"client_instance_id": first}}))
+
+        assert read_or_create_client_instance_id(path) == first
+
+
+def test_register_runtime_device_client_uses_device_contract() -> None:
+    """Registration sends only the observed, non-sensitive device metadata."""
+    response = httpx.Response(200, json={"device": {"status": "offline"}})
+    with patch(
+        "lightnow_cli.commands.integrations.request_with_refresh",
+        return_value=response,
+    ) as request:
+        register_runtime_device_client(
+            api_url="https://registry.example/v0.1",
+            token="token",
+            tenant="tenant-1",
+            installation_id="11111111-1111-4111-8111-111111111111",
+            client_instance_id="22222222-2222-4222-8222-222222222222",
+            client="codex",
+            profile="default",
+            transport="stdio",
+        )
+
+    assert request.call_args.args[:2] == (
+        "PUT",
+        "https://registry.example/v0.1/integrations/devices/"
+        "11111111-1111-4111-8111-111111111111/clients/"
+        "22222222-2222-4222-8222-222222222222",
+    )
+    assert request.call_args.kwargs["tenant"] == "tenant-1"
+    assert request.call_args.kwargs["json"]["client"] == {
+        "name": "codex",
+        "version": None,
+        "profile": "default",
+        "runner_name": "lightnow-local-proxy",
+        "runner_version": None,
+        "transport": "stdio",
+    }
+
+
+def test_sync_reuses_ids_and_registers_only_after_writing_files(
+    stub_device_registration,
+) -> None:
+    """Repeated syncs keep both ids and registration observes completed writes."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "config.toml"
+        proxy_config = Path(tmp) / "codex.yaml"
+
+        def assert_files_exist(**_kwargs):
+            assert target.exists()
+            assert proxy_config.exists()
+
+        stub_device_registration.side_effect = assert_files_exist
+        with patch(
+            "lightnow_cli.commands.integrations.require_access_token",
+            return_value="token",
+        ):
+            first = runner.invoke(
+                app,
+                [
+                    "sync",
+                    "--client",
+                    "codex",
+                    "--local-proxy",
+                    "--yes",
+                    "--config-path",
+                    str(target),
+                    "--local-proxy-config-path",
+                    str(proxy_config),
+                ],
+            )
+            second = runner.invoke(
+                app,
+                [
+                    "sync",
+                    "--client",
+                    "codex",
+                    "--local-proxy",
+                    "--yes",
+                    "--config-path",
+                    str(target),
+                    "--local-proxy-config-path",
+                    str(proxy_config),
+                ],
+            )
+
+    assert first.exit_code == second.exit_code == 0
+    assert stub_device_registration.call_count == 2
+    first_call, second_call = stub_device_registration.call_args_list
+    assert first_call.kwargs["installation_id"] == second_call.kwargs["installation_id"]
+    assert (
+        first_call.kwargs["client_instance_id"]
+        == second_call.kwargs["client_instance_id"]
+    )
+
+
+def test_sync_registers_distinct_clients_under_one_installation(
+    stub_device_registration,
+) -> None:
+    """Per-client proxy configs get distinct ids under the stable CLI installation."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        with patch(
+            "lightnow_cli.commands.integrations.require_access_token",
+            return_value="token",
+        ):
+            codex = runner.invoke(
+                app,
+                [
+                    "sync",
+                    "--client",
+                    "codex",
+                    "--local-proxy",
+                    "--yes",
+                    "--config-path",
+                    str(root / "config.toml"),
+                    "--local-proxy-config-path",
+                    str(root / "codex.yaml"),
+                ],
+            )
+            claude = runner.invoke(
+                app,
+                [
+                    "sync",
+                    "--client",
+                    "claude-desktop",
+                    "--local-proxy",
+                    "--yes",
+                    "--config-path",
+                    str(root / "claude.json"),
+                    "--local-proxy-config-path",
+                    str(root / "claude.yaml"),
+                ],
+            )
+
+    assert codex.exit_code == claude.exit_code == 0
+    codex_call, claude_call = stub_device_registration.call_args_list
+    assert codex_call.kwargs["installation_id"] == claude_call.kwargs["installation_id"]
+    assert (
+        codex_call.kwargs["client_instance_id"]
+        != claude_call.kwargs["client_instance_id"]
+    )
+    assert {codex_call.kwargs["client"], claude_call.kwargs["client"]} == {
+        "codex",
+        "claude-desktop",
+    }
+
+
+def test_sync_keeps_files_and_fails_when_device_registration_fails(
+    stub_device_registration,
+) -> None:
+    """A Registry outage leaves the local sync intact but marks it incomplete."""
+    runner = CliRunner()
+    stub_device_registration.side_effect = ValueError("Registry unavailable")
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "config.toml"
+        proxy_config = Path(tmp) / "codex.yaml"
+        with patch(
+            "lightnow_cli.commands.integrations.require_access_token",
+            return_value="token",
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "sync",
+                    "--client",
+                    "codex",
+                    "--local-proxy",
+                    "--yes",
+                    "--config-path",
+                    str(target),
+                    "--local-proxy-config-path",
+                    str(proxy_config),
+                ],
+            )
+
+        assert target.exists()
+        assert proxy_config.exists()
+
+    assert result.exit_code == 1
+    assert "Integration sync incomplete" in result.stdout
+    assert "local files were written" in result.stdout
+
+
+def test_sync_with_telemetry_disabled_does_not_register(
+    stub_device_registration,
+) -> None:
+    """The policy telemetry switch disables inventory registration completely."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "config.toml"
+        proxy_config = Path(tmp) / "codex.yaml"
+        with (
+            patch(
+                "lightnow_cli.commands.integrations.require_access_token",
+                return_value="token",
+            ),
+            patch(
+                "lightnow_cli.commands.integrations.fetch_integration_settings",
+                return_value={
+                    "defaultProfile": "default",
+                    "localProxy": {
+                        "enabled": True,
+                        "managedClients": ["codex"],
+                        "profile": "research",
+                        "telemetryEnabled": False,
+                    },
+                },
+            ),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "sync",
+                    "--client",
+                    "codex",
+                    "--from-settings",
+                    "--yes",
+                    "--config-path",
+                    str(target),
+                    "--local-proxy-config-path",
+                    str(proxy_config),
+                ],
+            )
+
+    assert result.exit_code == 0
+    stub_device_registration.assert_not_called()
+
+
 def test_sync_local_proxy_rejects_runner_mode_conflict() -> None:
     """Local Proxy Mode and legacy per-server runner wrappers are mutually exclusive."""
     runner = CliRunner()
@@ -1227,6 +1480,11 @@ def test_sync_local_proxy_replaces_existing_codex_mcp_servers() -> None:
     assert proxy_payload["local_proxy"]["connection_alias"] == "lightnow"
     assert proxy_payload["local_proxy"]["scope_type"] == "personal"
     uuid.UUID(proxy_payload["local_proxy"]["connection_id"])
+    assert proxy_payload["local_proxy"]["device_installation_id"]
+    assert proxy_payload["local_proxy"]["client_instance_id"]
+    assert proxy_payload["local_proxy"]["device_hostname"]
+    assert proxy_payload["local_proxy"]["device_platform"]
+    assert proxy_payload["local_proxy"]["telemetry_enabled"] is True
     assert proxy_payload["registry_api"]["use_cli_session"] is True
     assert proxy_payload["registry_api"]["include_secrets"] is True
     assert proxy_payload["profiles"] == {"default": {}}
