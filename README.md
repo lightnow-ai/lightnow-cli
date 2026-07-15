@@ -141,6 +141,12 @@ lightnow config-status --client cursor --json
 lightnow config-status --client vscode --json
 ```
 
+With metadata telemetry enabled, each Local Proxy sync also registers the
+machine and its client-specific Runtime Profile in the LightNow Control Plane.
+The CLI stores a stable installation UUID in its protected configuration and a
+separate stable client-instance UUID in each generated proxy configuration. It
+does not report IP or MAC addresses, serial numbers, local paths, or secrets.
+
 For details, examples, diagrams and troubleshooting, see
 [Connect MCP clients](https://docs.lightnow.ai/getting-started/sync-mcp-clients).
 
