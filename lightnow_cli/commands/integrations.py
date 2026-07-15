@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import socket
 import subprocess
@@ -84,6 +85,14 @@ CLIENT_DEFAULTS: dict[str, tuple[str, Path]] = {
 }
 
 CLIENTS = sorted(CLIENT_DEFAULTS)
+IMPORT_CLIENTS = {
+    "antigravity",
+    "claude-code",
+    "claude-desktop",
+    "codex",
+    "cursor",
+    "vscode",
+}
 SECRET_MODES = ["placeholder", "plaintext"]
 LOCAL_PROXY_MCP_SERVERS_JSON_CLIENTS = {
     "antigravity",
@@ -124,6 +133,27 @@ def default_local_proxy_config_path(client: str) -> Path:
     """Return the per-client Local Proxy config path used by sync."""
     safe_client = re.sub(r"[^A-Za-z0-9_.-]+", "-", client).strip("-") or "client"
     return DEFAULT_LOCAL_PROXY_CONFIG_DIR / f"{safe_client}.yaml"
+
+
+def default_local_proxy_profile_config_path(profile: str = "default") -> Path:
+    """Return the profile-level Local Proxy config path used by proxy defaults."""
+    safe_profile = re.sub(r"[^A-Za-z0-9_.-]+", "-", profile).strip("-") or "default"
+    return DEFAULT_LOCAL_PROXY_CONFIG_DIR / f"{safe_profile}.yaml"
+
+
+def local_proxy_default_config_alias(
+    *,
+    profile: str,
+    explicit_config_path: Optional[Path],
+    proxy_target: Path,
+) -> Optional[Path]:
+    """Return the default health-check alias path that should mirror a sync."""
+    if explicit_config_path is not None or profile != "default":
+        return None
+    alias = default_local_proxy_profile_config_path(profile).expanduser()
+    if alias == proxy_target.expanduser():
+        return None
+    return alias
 
 
 def discover_local_lightnow_ca_file(registry_api_url: str) -> Optional[Path]:
@@ -193,6 +223,70 @@ def direct_server_aliases(content: str, export_format: str) -> list[str]:
     except ValueError:
         return []
     return sorted(alias for alias in entries if alias not in LIGHTNOW_PROXY_ALIASES)
+
+
+def json_server_maps_are_empty(content: str) -> bool:
+    """Return whether a JSON export contains only empty server maps."""
+    payload = json.loads(content)
+    if not isinstance(payload, dict):
+        return False
+    sections = [payload[key] for key in ("mcpServers", "servers") if key in payload]
+    return bool(sections) and all(
+        isinstance(section, dict) and not section for section in sections
+    )
+
+
+def empty_profile_import_command(
+    *,
+    client: str,
+    profile: str,
+    target: Path,
+    tenant: Optional[str],
+    api_url: Optional[str],
+) -> str:
+    """Build a copyable command that previews importing an existing client config."""
+    args = [
+        "lightnow",
+        "import-config",
+        "--client",
+        client,
+        "--profile",
+        profile,
+        "--config-path",
+        str(target),
+        "--dry-run",
+    ]
+    if tenant:
+        args.extend(["--tenant", tenant])
+    if api_url:
+        args.extend(["--api-url", api_url])
+    return shlex.join(args)
+
+
+def print_empty_profile_import_hint(
+    *,
+    client: str,
+    profile: str,
+    target: Path,
+    aliases: list[str],
+    tenant: Optional[str],
+    api_url: Optional[str],
+) -> None:
+    """Explain that existing client servers were preserved and can be imported."""
+    err_console.print(
+        f"[yellow]LightNow profile {profile} has no MCP servers, but {client} already "
+        f"configures: {', '.join(aliases)}. These existing client entries were kept.[/yellow]"
+    )
+    command = empty_profile_import_command(
+        client=client,
+        profile=profile,
+        target=target,
+        tenant=tenant,
+        api_url=api_url,
+    )
+    err_console.print(
+        f"[cyan]To preview importing them into LightNow, run:[/cyan] {command}"
+    )
 
 
 @app.command("sync")
@@ -329,8 +423,10 @@ def sync(
     ).expanduser()
     device_installation_id: Optional[str] = None
     client_instance_id: Optional[str] = None
+    proxy_default_alias: Optional[Path] = None
     settings_local_proxy_summary: dict[str, Any] = {}
     removed_direct_servers: list[str] = []
+    empty_profile_existing_aliases: list[str] = []
     remove_unmanaged_client_servers = local_proxy
     policy_managed_sync = False
 
@@ -370,6 +466,11 @@ def sync(
                 else config_manager.get_or_create_device_installation_id()
             )
             client_instance_id = read_or_create_client_instance_id(proxy_target)
+            proxy_default_alias = local_proxy_default_config_alias(
+                profile=profile,
+                explicit_config_path=local_proxy_config_path,
+                proxy_target=proxy_target,
+            )
             generated = build_local_proxy_export(
                 client=client,
                 export_format=export_format,
@@ -390,6 +491,7 @@ def sync(
                 ),
                 device_installation_id=device_installation_id,
                 client_instance_id=client_instance_id,
+                runtime_secrets=read_local_runtime_secrets(proxy_target),
             )
         elif runner:
             profile_payload = fetch_profile_servers(
@@ -445,6 +547,18 @@ def sync(
             previous_managed["aliases"],
             previous_managed["input_ids"],
         )
+        if (
+            not local_proxy
+            and not runner
+            and export_format == "json"
+            and json_server_maps_are_empty(generated)
+        ):
+            managed_aliases = set(previous_managed["aliases"])
+            empty_profile_existing_aliases = [
+                alias
+                for alias in direct_server_aliases(existing, export_format)
+                if alias not in managed_aliases
+            ]
     except AccessTokenExpired:
         console.print(f"[red]{ACCESS_TOKEN_EXPIRED_MESSAGE}[/red]")
         raise typer.Exit(1)
@@ -460,6 +574,16 @@ def sync(
         console.print(f"[bold red]Integration sync failed:[/bold red] {exc}")
         raise typer.Exit(1) from exc
 
+    if empty_profile_existing_aliases:
+        print_empty_profile_import_hint(
+            client=client,
+            profile=profile,
+            target=target,
+            aliases=empty_profile_existing_aliases,
+            tenant=tenant,
+            api_url=api_url,
+        )
+
     if dry_run:
         typer.echo(redact(patched))
         err_console.print("[cyan]Dry run: nothing was written.[/cyan]")
@@ -468,6 +592,10 @@ def sync(
             err_console.print(
                 f"[cyan]Would write Local Proxy config: {proxy_target}[/cyan]"
             )
+            if proxy_default_alias is not None:
+                err_console.print(
+                    f"[cyan]Would update default Local Proxy config: {proxy_default_alias}[/cyan]"
+                )
             if removed_direct_servers:
                 err_console.print(
                     "[yellow]Would remove direct MCP server entries:[/yellow] "
@@ -513,6 +641,11 @@ def sync(
     if local_proxy:
         secure_write_text(proxy_target, proxy_config)
         console.print(f"[green]Wrote Local Proxy config to {proxy_target}[/green]")
+        if proxy_default_alias is not None:
+            secure_write_text(proxy_default_alias, proxy_config)
+            console.print(
+                f"[green]Updated default Local Proxy config at {proxy_default_alias}[/green]"
+            )
         if client == "claude-code":
             warm_local_proxy_tools_cache(proxy_target)
 
@@ -668,9 +801,10 @@ def import_config(
     if client not in CLIENT_DEFAULTS:
         raise_bad_argument("Unsupported client", f"Use one of: {', '.join(CLIENTS)}")
     _, default_path = CLIENT_DEFAULTS[client]
-    if client != "codex":
+    if client not in IMPORT_CLIENTS:
         raise_bad_argument(
-            "Unsupported import client", "Config import currently supports Codex."
+            "Unsupported import client",
+            f"Config import supports: {', '.join(sorted(IMPORT_CLIENTS))}.",
         )
 
     target = (config_path or default_path).expanduser()
@@ -895,6 +1029,7 @@ def build_local_proxy_config(
     local_proxy_settings: Optional[dict[str, Any]] = None,
     device_installation_id: Optional[str] = None,
     client_instance_id: Optional[str] = None,
+    runtime_secrets: Optional[dict[str, Any]] = None,
 ) -> str:
     """Render the local LightNow Proxy config for LightNow-managed profile sync."""
     parsed = urlparse(local_proxy_url)
@@ -966,6 +1101,7 @@ def build_local_proxy_config(
             "jwks_cache_seconds": 300,
         },
         "registry_api": registry_api,
+        "runtime_secrets": runtime_secrets or {"providers": {}},
         "profiles": {profile: {}},
         "upstreams": {},
     }
@@ -1049,6 +1185,23 @@ def register_runtime_device_client(
         raise authentication_error_from_response(response)
     if response.status_code >= 400:
         raise ValueError(f"HTTP {response.status_code}: {redact(response.text)}")
+
+
+def read_local_runtime_secrets(path: Path) -> dict[str, Any]:
+    """Preserve non-secret local provider mappings across managed config syncs."""
+    try:
+        payload = yaml.safe_load(path.expanduser().read_text()) or {}
+    except (FileNotFoundError, OSError, yaml.YAMLError):
+        return {"providers": {}}
+    if not isinstance(payload, dict):
+        return {"providers": {}}
+    runtime_secrets = payload.get("runtime_secrets")
+    if not isinstance(runtime_secrets, dict):
+        return {"providers": {}}
+    providers = runtime_secrets.get("providers")
+    if not isinstance(providers, dict):
+        return {"providers": {}}
+    return {"providers": providers}
 
 
 def build_runner_export(

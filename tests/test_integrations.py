@@ -19,6 +19,7 @@ from lightnow_cli.commands.auth import (
 from lightnow_cli.commands.integrations import (
     BEGIN,
     END,
+    IMPORT_CLIENTS,
     JSON_MANIFEST_SUFFIX,
     analyze_client_config_content,
     analyze_client_config_file,
@@ -27,6 +28,7 @@ from lightnow_cli.commands.integrations import (
     build_runner_export,
     configure_vscode_virtual_tools,
     default_local_proxy_config_path,
+    default_local_proxy_profile_config_path,
     discover_local_lightnow_ca_file,
     extract_json_managed,
     fetch_export,
@@ -36,6 +38,7 @@ from lightnow_cli.commands.integrations import (
     prepare_codex_local_proxy_config,
     prepare_json_local_proxy_config,
     print_import_summary,
+    read_local_runtime_secrets,
     read_or_create_client_instance_id,
     redact,
     register_runtime_device_client,
@@ -51,7 +54,9 @@ from lightnow_cli.commands.runner import (
     fetch_runtime_context,
     json_response_or_error,
     launch_config_from_context,
+    resolve_external_secret_bindings,
     resolve_profile_server,
+    resolve_vault_runtime_secret,
     runner_failure_summary,
 )
 from lightnow_cli.main import app
@@ -317,6 +322,67 @@ def test_sync_json_writes_manifest_and_preserves_user_config() -> None:
         assert target.with_suffix(".json.lightnow.bak").exists()
 
 
+def test_empty_antigravity_profile_preserves_servers_and_suggests_import() -> None:
+    """An empty server map preserves client servers and suggests importing them."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "mcp_config.json"
+        target.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "local-redis": {
+                            "command": "docker",
+                            "args": ["run", "--rm", "mcp/redis"],
+                        }
+                    }
+                }
+            )
+        )
+
+        with (
+            patch(
+                "lightnow_cli.commands.integrations.require_access_token",
+                return_value="token",
+            ),
+            patch(
+                "lightnow_cli.commands.integrations.fetch_export",
+                return_value='{"mcpServers": {}}',
+            ),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "sync",
+                    "--client",
+                    "antigravity",
+                    "--config-path",
+                    str(target),
+                    "--yes",
+                ],
+            )
+
+        payload = json.loads(target.read_text())
+
+    assert result.exit_code == 0
+    assert payload["mcpServers"]["local-redis"]["command"] == "docker"
+    assert "LightNow profile default has no MCP servers" in result.stderr
+    assert "These existing client entries were kept" in result.stderr
+    compact_stderr = result.stderr.replace("\n", "")
+    assert "lightnow import-config --client antigravity" in compact_stderr
+    assert f"--config-path {target}" in compact_stderr
+    assert "--dry-run" in compact_stderr
+
+
+def test_json_sync_rejects_non_object_server_map() -> None:
+    """JSON exports must provide object-shaped server maps."""
+    with pytest.raises(
+        ValueError,
+        match="LightNow can only sync JSON object field mcpServers",
+    ):
+        patch_config("{}", '{"mcpServers": []}', "json")
+
+
 def test_sync_json_preserves_user_inputs_and_replaces_lightnow_inputs() -> None:
     """VS Code sync patches inputs without deleting user-owned prompts."""
     existing = json.dumps(
@@ -514,6 +580,15 @@ def test_default_local_proxy_config_path_is_client_specific() -> None:
     assert default_local_proxy_config_path("gemini-cli").name == "gemini-cli.yaml"
     assert (
         default_local_proxy_config_path("Claude Desktop").name == "Claude-Desktop.yaml"
+    )
+
+
+def test_default_local_proxy_profile_config_path_is_profile_specific() -> None:
+    """The proxy health default is keyed by profile, not by MCP client."""
+    assert default_local_proxy_profile_config_path("default").name == "default.yaml"
+    assert (
+        default_local_proxy_profile_config_path("Engineering Team").name
+        == "Engineering-Team.yaml"
     )
 
 
@@ -1387,6 +1462,50 @@ def test_sync_local_proxy_replaces_existing_codex_mcp_servers() -> None:
     assert proxy_payload["registry_api"]["include_secrets"] is True
     assert proxy_payload["profiles"] == {"default": {}}
     assert proxy_payload["upstreams"] == {}
+
+
+def test_sync_local_proxy_updates_default_profile_config_alias() -> None:
+    """Default-profile sync also updates the config path used by lightnow-proxy --health."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "config.toml"
+        proxy_config = Path(tmp) / "codex.yaml"
+        default_config = Path(tmp) / "default.yaml"
+        with (
+            patch(
+                "lightnow_cli.commands.integrations.require_access_token",
+                return_value="token",
+            ),
+            patch(
+                "lightnow_cli.commands.integrations.default_local_proxy_config_path",
+                return_value=proxy_config,
+            ),
+            patch(
+                "lightnow_cli.commands.integrations.default_local_proxy_profile_config_path",
+                return_value=default_config,
+            ),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "sync",
+                    "--client",
+                    "codex",
+                    "--local-proxy",
+                    "--yes",
+                    "--config-path",
+                    str(target),
+                ],
+            )
+            proxy_exists = proxy_config.exists()
+            default_exists = default_config.exists()
+            configs_match = default_config.read_text() == proxy_config.read_text()
+
+    assert result.exit_code == 0
+    assert proxy_exists
+    assert default_exists
+    assert configs_match
+    assert "Updated default Local Proxy config" in result.stdout
 
 
 def test_sync_local_proxy_replaces_existing_claude_desktop_mcp_servers() -> None:
@@ -2357,6 +2476,155 @@ def test_launch_config_from_context_extracts_secret_environment() -> None:
     assert cwd == "~/code"
 
 
+def test_runner_resolves_runtime_vault_binding_through_local_vault_proxy(
+    monkeypatch,
+) -> None:
+    """Runtime-only values are fetched locally and never require an API-held token."""
+    monkeypatch.setenv("LIGHTNOW_VAULT_PROXY_URL", "http://127.0.0.1:18200")
+    context = {
+        "probe_request": {"transport": "stdio", "stdio": {"cmd": "docker", "env": {}}},
+        "external_secret_bindings": [
+            {
+                "provider": {
+                    "id": "provider-uuid",
+                    "provider_type": "vault_kv_v2",
+                    "resolution_mode": "runtime",
+                    "config": {
+                        "address": "https://vault.customer.internal",
+                        "namespace": "customer",
+                    },
+                },
+                "locator": {"path": "secret/data/lightnow/test", "field": "token"},
+                "target": {"type": "env", "name": "API_TOKEN"},
+            }
+        ],
+    }
+    response = httpx.Response(
+        200,
+        request=httpx.Request(
+            "GET", "http://127.0.0.1:18200/v1/secret/data/lightnow/test"
+        ),
+        json={"data": {"data": {"token": "runtime-value"}}},
+    )
+
+    with patch(
+        "lightnow_cli.commands.runner.httpx.get", return_value=response
+    ) as vault_get:
+        resolve_external_secret_bindings(context)
+
+    assert context["probe_request"]["stdio"]["env"]["API_TOKEN"] == "runtime-value"
+    assert (
+        vault_get.call_args.args[0]
+        == "http://127.0.0.1:18200/v1/secret/data/lightnow/test"
+    )
+    assert vault_get.call_args.kwargs["headers"] == {"X-Vault-Namespace": "customer"}
+    assert vault_get.call_args.kwargs["follow_redirects"] is False
+
+
+def test_runner_rejects_runtime_binding_target_before_contacting_vault() -> None:
+    context = {
+        "probe_request": {"transport": "stdio", "stdio": {"cmd": "docker"}},
+        "external_secret_bindings": [
+            {
+                "provider": {
+                    "id": "provider-uuid",
+                    "provider_type": "vault_kv_v2",
+                    "resolution_mode": "runtime",
+                    "config": {},
+                },
+                "locator": {"path": "secret/data/lightnow/test", "field": "token"},
+                "target": {"type": "header", "name": "Authorization"},
+            }
+        ],
+    }
+
+    with patch("lightnow_cli.commands.runner.httpx.get") as vault_get:
+        try:
+            resolve_external_secret_bindings(context)
+        except ValueError as exc:
+            assert "does not match" in str(exc)
+        else:
+            raise AssertionError("expected ValueError")
+
+    vault_get.assert_not_called()
+
+
+def test_runtime_vault_resolution_fails_closed_for_unsafe_proxy_and_responses(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("LIGHTNOW_VAULT_PROXY_URL", "http://vault.attacker.example:8200")
+    try:
+        resolve_vault_runtime_secret(
+            provider_id="provider-uuid",
+            config={},
+            path="secret/data/test",
+            field="token",
+        )
+    except ValueError as exc:
+        assert "loopback" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+    monkeypatch.setenv("LIGHTNOW_VAULT_PROXY_URL", "http://127.0.0.1:8200")
+    responses = [
+        (
+            httpx.Response(302, headers={"Location": "http://169.254.169.254"}),
+            "redirect",
+        ),
+        (httpx.Response(503), "HTTP 503"),
+        (httpx.Response(200, content=b"x" * (64 * 1024 + 1)), "oversized"),
+        (httpx.Response(200, content=b"not-json"), "invalid JSON"),
+        (httpx.Response(200, json={"data": {"data": {}}}), "scalar field"),
+    ]
+    for response, expected in responses:
+        response.request = httpx.Request(
+            "GET", "http://127.0.0.1:8200/v1/secret/data/test"
+        )
+        with patch("lightnow_cli.commands.runner.httpx.get", return_value=response):
+            try:
+                resolve_vault_runtime_secret(
+                    provider_id="provider-uuid",
+                    config={},
+                    path="secret/data/test",
+                    field="token",
+                )
+            except ValueError as exc:
+                assert expected in str(exc)
+            else:
+                raise AssertionError("expected ValueError")
+
+
+def test_local_proxy_sync_preserves_runtime_secret_provider_mappings(tmp_path) -> None:
+    config_path = tmp_path / "codex.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "runtime_secrets": {
+                    "providers": {
+                        "provider-uuid": {
+                            "auth_mode": "vault-proxy",
+                            "vault_proxy_url": "http://127.0.0.1:18200",
+                        }
+                    }
+                }
+            }
+        )
+    )
+
+    preserved = read_local_runtime_secrets(config_path)
+    rendered = yaml.safe_load(
+        build_local_proxy_config(
+            local_proxy_url="http://127.0.0.1:8765/mcp",
+            profile="default",
+            registry_api_url="https://registry-api.lightnow.ai",
+            tenant=None,
+            runtime_secrets=preserved,
+        )
+    )
+
+    assert rendered["runtime_secrets"] == preserved
+
+
 def test_runner_context_readiness_reports_missing_inputs() -> None:
     """The runner blocks before starting a child process when config is incomplete."""
     try:
@@ -2821,6 +3089,81 @@ def test_import_config_command_prints_only_redacted_summary() -> None:
     assert "secret-value" not in result.stdout
     assert "GITHUB_TOKEN" not in result.stdout
     importer.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "client, filename",
+    [
+        ("antigravity", "mcp_config.json"),
+        ("claude-code", "claude.json"),
+        ("claude-desktop", "claude_desktop_config.json"),
+        ("cursor", "mcp.json"),
+        ("vscode", "mcp.json"),
+    ],
+)
+def test_import_config_command_accepts_wizard_clients(
+    client: str, filename: str
+) -> None:
+    """Wizard clients can import their existing JSON MCP config."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / filename
+        target.write_text('{"mcpServers":{"github":{"command":"docker"}}}')
+        with (
+            patch(
+                "lightnow_cli.commands.integrations.require_access_token",
+                return_value="token",
+            ),
+            patch(
+                "lightnow_cli.commands.integrations.import_profile_config",
+                return_value={
+                    "dry_run": True,
+                    "profile": {"name": "default"},
+                    "summary": {
+                        "total": 1,
+                        "mapped": 1,
+                        "custom": 0,
+                        "importable": 1,
+                        "blocked": 0,
+                    },
+                    "servers": [
+                        {
+                            "alias": "github",
+                            "status": "mapped",
+                            "server_name": "io.github.github/github-mcp-server",
+                        }
+                    ],
+                },
+            ) as importer,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "import-config",
+                    "--client",
+                    client,
+                    "--config-path",
+                    str(target),
+                    "--dry-run",
+                ],
+            )
+
+    assert result.exit_code == 0
+    assert "Previewed" in result.stdout
+    importer.assert_called_once()
+    assert importer.call_args.kwargs["source"] == client
+    assert client in IMPORT_CLIENTS
+
+
+def test_import_config_command_rejects_non_wizard_clients() -> None:
+    """Import stays limited to clients that the onboarding wizard supports."""
+    runner = CliRunner()
+    result = runner.invoke(app, ["import-config", "--client", "gemini-cli"])
+
+    assert result.exit_code != 0
+    assert "Unsupported import client" in result.stdout
+    assert "antigravity" in result.stdout
+    assert "gemini-cli" not in result.stdout.split("Config import supports:", 1)[-1]
 
 
 def test_fetch_export_refreshes_and_retries_after_unauthorized() -> None:
