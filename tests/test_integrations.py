@@ -577,8 +577,18 @@ def test_default_local_proxy_profile_config_path_is_profile_specific() -> None:
 
 
 def test_named_connection_alias_must_identify_lightnow() -> None:
-    with pytest.raises(ValueError, match="must start with lightnow"):
+    with pytest.raises(ValueError, match="must be 'lightnow'"):
         default_local_proxy_config_path("codex", "personal")
+
+
+def test_named_connection_alias_rejects_toml_dotted_keys() -> None:
+    with pytest.raises(ValueError, match="must be 'lightnow'"):
+        default_local_proxy_config_path("codex", "lightnow.acme")
+
+
+def test_named_connection_alias_requires_a_prefix_separator() -> None:
+    with pytest.raises(ValueError, match="start with 'lightnow-'"):
+        default_local_proxy_config_path("codex", "lightnow1")
 
 
 def test_analyzes_managed_codex_local_proxy_config() -> None:

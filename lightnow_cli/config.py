@@ -250,8 +250,12 @@ class ConfigManager:
                 tmp_path.unlink()
 
     def clear_token(self) -> None:
-        """Clear stored access token and account-scoped context."""
+        """Clear stored credentials for the active session and account context."""
         config = self.load_config()
+        if config.active_session_id:
+            session_path = self.sessions_dir / f"{config.active_session_id}.json"
+            with FileLock(f"{session_path}.lock"):
+                session_path.unlink(missing_ok=True)
         config.access_token = None
         config.refresh_token = None
         config.active_session_id = None

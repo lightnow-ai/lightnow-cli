@@ -110,7 +110,7 @@ LOCAL_LIGHTNOW_CA_RELATIVE_PATH = Path(".local-runtime/certs/lightnow-local-ca.c
 LOCAL_PROXY_EXECUTABLE = "lightnow-proxy"
 LEGACY_LOCAL_PROXY_EXECUTABLE = "mcp-proxy"
 LIGHTNOW_PROXY_ALIASES = {"lightnow", "LightNow"}
-CONNECTION_ALIAS_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,62}[A-Za-z0-9])?$")
+CONNECTION_ALIAS_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,62}[A-Za-z0-9])?$")
 CLIENT_INTERNAL_MCP_SERVERS = {
     "codex": {"node_repl"},
 }
@@ -134,12 +134,12 @@ def validate_connection_alias(alias: str) -> str:
     """Return a client-safe connection alias or fail with an actionable error."""
     normalized = alias.lower()
     has_lightnow_prefix = normalized == "lightnow" or normalized.startswith(
-        ("lightnow-", "lightnow_", "lightnow.")
+        ("lightnow-", "lightnow_")
     )
     if not CONNECTION_ALIAS_RE.fullmatch(alias) or not has_lightnow_prefix:
         raise ValueError(
-            "Connection alias must start with lightnow and use at most 64 letters, "
-            "numbers, dots, underscores or hyphens."
+            "Connection alias must be 'lightnow' or start with 'lightnow-' or "
+            "'lightnow_', and use at most 64 letters, numbers, underscores or hyphens."
         )
     return alias
 

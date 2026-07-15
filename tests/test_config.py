@@ -186,6 +186,26 @@ def test_persist_current_session_separates_environments(config_manager):
     assert config_manager.load_config().active_session_id is None
 
 
+def test_clear_token_removes_only_active_named_session(config_manager):
+    config_manager.save_config(
+        Config(
+            access_token="access",
+            refresh_token="refresh",
+            issuer="https://auth.example.test/realms/example",
+            user_info={"sub": "active-user"},
+        )
+    )
+    active = config_manager.persist_current_session()
+    inactive_path = config_manager.sessions_dir / "inactive-session.json"
+    inactive_path.write_text('{"refresh_token": "other-refresh"}')
+
+    config_manager.clear_token()
+
+    assert not Path(active["path"]).exists()
+    assert inactive_path.exists()
+    assert config_manager.load_config().active_session_id is None
+
+
 def test_set_token_clears_cached_user_info(config_manager):
     """Refreshing tokens clears stale cached identity claims."""
     config_manager.set_token(
