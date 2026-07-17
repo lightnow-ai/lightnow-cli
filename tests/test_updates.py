@@ -101,6 +101,8 @@ def test_read_and_freshness_reject_malformed_state(tmp_path) -> None:
     assert updates.state_is_fresh({"checked_at": "invalid"}, now) is False
     assert updates.state_is_fresh({"checked_at": "2026-07-17T08:00:00Z"}, now) is True
     assert updates.state_is_fresh({"checked_at": "2026-07-15T08:00:00Z"}, now) is False
+    assert updates.state_is_fresh({"checked_at": "2026-07-18T08:00:00Z"}, now) is False
+    assert updates.state_is_fresh({"checked_at": "2026-07-17T08:00:00"}, now) is False
 
 
 def test_installer_detection_and_commands_are_allowlisted() -> None:
@@ -198,6 +200,15 @@ def test_write_update_state_is_atomic_and_private(tmp_path) -> None:
     if os.name != "nt":
         assert target.stat().st_mode & 0o777 == 0o600
         assert target.parent.stat().st_mode & 0o777 == 0o700
+
+
+def test_write_update_state_works_without_fchmod(monkeypatch, tmp_path) -> None:
+    target = tmp_path / ".lightnow" / "update-state.json"
+    monkeypatch.delattr(updates.os, "fchmod", raising=False)
+
+    updates.write_update_state(update_state(), target)
+
+    assert json.loads(target.read_text()) == update_state()
 
 
 def test_apply_updates_runs_brew_update_once_and_verifies_components(
@@ -325,6 +336,30 @@ def test_background_refresh_skips_fresh_state_and_cleans_up_spawn_failure(
     )
     updates.start_background_refresh()
     assert pending.exists() is False
+
+
+def test_background_refresh_tolerates_pending_file_removal(
+    monkeypatch, tmp_path
+) -> None:
+    pending = tmp_path / ".pending"
+    pending.touch()
+    monkeypatch.setattr(updates, "UPDATE_PENDING_PATH", pending)
+    monkeypatch.setattr(updates, "read_update_state", lambda: None)
+    original_stat = Path.stat
+
+    def disappearing_stat(path: Path, *args, **kwargs):
+        if path == pending:
+            path.unlink()
+            raise FileNotFoundError(path)
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", disappearing_stat)
+    process = MagicMock()
+    monkeypatch.setattr(updates.subprocess, "Popen", process)
+
+    updates.start_background_refresh()
+
+    process.assert_called_once()
 
 
 def test_update_check_json_does_not_install(monkeypatch) -> None:

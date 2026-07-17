@@ -179,7 +179,9 @@ def write_update_state(state: dict[str, Any], path: Path | None = None) -> None:
     )
     temporary_path = Path(temporary)
     try:
-        os.fchmod(fd, 0o600)
+        fchmod = getattr(os, "fchmod", None)
+        if fchmod is not None:
+            fchmod(fd, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             fd = -1
             json.dump(state, handle, indent=2)
@@ -215,7 +217,11 @@ def state_is_fresh(state: dict[str, Any] | None, now: datetime | None = None) ->
         checked_at = datetime.fromisoformat(state["checked_at"].replace("Z", "+00:00"))
     except ValueError:
         return False
-    return (now or _utc_now()) - checked_at < CHECK_INTERVAL
+    try:
+        age = (now or _utc_now()) - checked_at
+    except TypeError:
+        return False
+    return timedelta(0) <= age < CHECK_INTERVAL
 
 
 def refresh_update_state(path: Path | None = None) -> dict[str, Any]:
@@ -345,10 +351,12 @@ def start_background_refresh() -> None:
     if state_is_fresh(state):
         return
     UPDATE_PENDING_PATH.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if UPDATE_PENDING_PATH.exists():
-        age = _utc_now() - datetime.fromtimestamp(
-            UPDATE_PENDING_PATH.stat().st_mtime, UTC
-        )
+    try:
+        pending_modified_at = UPDATE_PENDING_PATH.stat().st_mtime
+    except FileNotFoundError:
+        pass
+    else:
+        age = _utc_now() - datetime.fromtimestamp(pending_modified_at, UTC)
         if age < PENDING_MAX_AGE:
             return
         UPDATE_PENDING_PATH.unlink(missing_ok=True)

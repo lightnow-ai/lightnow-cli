@@ -2303,8 +2303,9 @@ def test_build_local_proxy_config_can_pin_tenant_context() -> None:
         "uv",
         "unknown",
     }
-    assert payload["local_proxy"]["update_state_path"].endswith(
-        "/.lightnow/update-state.json"
+    assert Path(payload["local_proxy"]["update_state_path"]).parts[-2:] == (
+        ".lightnow",
+        "update-state.json",
     )
     assert (
         payload["registry_api"]["base_url"]
