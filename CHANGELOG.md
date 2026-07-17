@@ -4,6 +4,13 @@ All notable changes to the LightNow CLI are documented here.
 
 This project follows semantic versioning.
 
+## [1.3.1](https://github.com/lightnow-ai/lightnow-cli/compare/v1.3.0...v1.3.1) (2026-07-17)
+
+
+### Bug Fixes
+
+* **sync:** replace existing codex proxy connection ([c09b7f7](https://github.com/lightnow-ai/lightnow-cli/commit/c09b7f75f9d78c943ed7556b10b10ff99dbb2008))
+
 ## [1.3.0](https://github.com/lightnow-ai/lightnow-cli/compare/v1.2.0...v1.3.0) (2026-07-15)
 
 
