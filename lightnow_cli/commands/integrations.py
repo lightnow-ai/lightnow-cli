@@ -602,6 +602,8 @@ def sync(
         )
         if local_proxy and remove_unmanaged_client_servers:
             removed_direct_servers = direct_server_aliases(existing, export_format)
+        if local_proxy and client == "codex" and export_format == "toml":
+            existing = remove_codex_mcp_server_alias(existing, connection)
         if (
             local_proxy
             and remove_unmanaged_client_servers
@@ -2279,6 +2281,16 @@ def prepare_codex_local_proxy_config(existing: str) -> str:
         )
     }
     return strip_codex_mcp_server_tables(existing, preserved)
+
+
+def remove_codex_mcp_server_alias(existing: str, alias: str) -> str:
+    """Remove one Codex MCP table before writing its managed replacement."""
+    if not existing.strip():
+        return existing
+    entries = extract_mcp_entries(existing, "toml")
+    if alias not in entries:
+        return existing
+    return strip_codex_mcp_server_tables(existing, set(entries) - {alias})
 
 
 def prepare_json_local_proxy_config(existing: str) -> str:

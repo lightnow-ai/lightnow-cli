@@ -1491,6 +1491,51 @@ def test_sync_local_proxy_replaces_existing_codex_mcp_servers() -> None:
     assert proxy_payload["upstreams"] == {}
 
 
+def test_sync_local_proxy_replaces_legacy_unmanaged_codex_connection_once() -> None:
+    """Re-sync migrates a pre-marker LightNow entry without duplicating its table."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "config.toml"
+        proxy_config = Path(tmp) / "codex.yaml"
+        target.write_text(
+            'model = "gpt-5.5"\n\n'
+            "[mcp_servers.lightnow]\n"
+            'command = "lightnow-proxy"\n'
+            'args = ["--config", "/tmp/legacy.yaml", "--transport", "stdio"]\n\n'
+            "[mcp_servers.computer-use]\n"
+            'command = "computer-use"\n\n'
+            "[plugins.browser]\n"
+            "enabled = true\n"
+        )
+        with patch(
+            "lightnow_cli.commands.integrations.require_access_token",
+            return_value="token",
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "sync",
+                    "--client",
+                    "codex",
+                    "--local-proxy",
+                    "--yes",
+                    "--local-proxy-config-path",
+                    str(proxy_config),
+                    "--config-path",
+                    str(target),
+                ],
+            )
+
+        patched = target.read_text()
+        payload = tomllib.loads(patched)
+
+    assert result.exit_code == 0
+    assert patched.count("[mcp_servers.lightnow]") == 1
+    assert set(payload["mcp_servers"]) == {"lightnow"}
+    assert payload["mcp_servers"]["lightnow"]["args"][1] == str(proxy_config)
+    assert payload["plugins"]["browser"]["enabled"] is True
+
+
 def test_sync_local_proxy_updates_default_profile_config_alias() -> None:
     """Default-profile sync also updates the config path used by lightnow-proxy --health."""
     runner = CliRunner()
