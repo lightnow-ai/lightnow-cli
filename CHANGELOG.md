@@ -4,6 +4,19 @@ All notable changes to the LightNow CLI are documented here.
 
 This project follows semantic versioning.
 
+## [1.4.0](https://github.com/lightnow-ai/lightnow-cli/compare/v1.3.1...v1.4.0) (2026-07-17)
+
+
+### Features
+
+* **#13:** add managed updates ([844e9c5](https://github.com/lightnow-ai/lightnow-cli/commit/844e9c5cb0fb2134f9e6014f02a0a4ca49db019c))
+* add managed updates ([275387e](https://github.com/lightnow-ai/lightnow-cli/commit/275387e05fd40f5b0564d9001acf9d3ed19ced5a))
+
+
+### Bug Fixes
+
+* harden managed update checks ([0c3a285](https://github.com/lightnow-ai/lightnow-cli/commit/0c3a285ccdfab4b39e60f905c9274e242245b2d8))
+
 ## [1.3.1](https://github.com/lightnow-ai/lightnow-cli/compare/v1.3.0...v1.3.1) (2026-07-17)
 
 
