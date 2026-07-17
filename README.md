@@ -41,6 +41,25 @@ If you prefer installing directly from the public repository:
 pipx install git+https://github.com/lightnow-ai/lightnow-cli.git
 ```
 
+## Update
+
+The CLI manages supported installations of both the CLI and Local Proxy:
+
+```bash
+lightnow update --check
+lightnow update
+```
+
+Use `lightnow update --yes` for an approved non-interactive update or
+`lightnow update --check --json` for automation. Managed updates support
+Homebrew, pipx and uv. Editable, plain pip and unknown virtual-environment
+installs are reported but never changed automatically.
+
+Interactive CLI sessions check the release catalog at most once per day and
+show a short notice when an update is ready across all supported channels. Set
+`LIGHTNOW_NO_UPDATE_CHECK=1` to disable this background check. The Local Proxy
+never installs updates itself.
+
 ## Sign In
 
 ```bash
@@ -180,6 +199,8 @@ machine and its client-specific Runtime Profile in the LightNow Control Plane.
 The CLI stores a stable installation UUID in its protected configuration and a
 separate stable client-instance UUID in each generated proxy configuration. It
 does not report IP or MAC addresses, serial numbers, local paths, or secrets.
+The Control Plane can additionally show the observed CLI and Proxy versions,
+their supported installation channel and whether an update is available.
 
 For details, examples, diagrams and troubleshooting, see
 [Connect MCP clients](https://docs.lightnow.ai/getting-started/sync-mcp-clients).

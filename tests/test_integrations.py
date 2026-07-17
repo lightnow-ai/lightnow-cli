@@ -12,6 +12,7 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
+from lightnow_cli import __version__
 from lightnow_cli.commands.auth import (
     ACCESS_TOKEN_EXPIRED_MESSAGE,
     AccessTokenExpired,
@@ -1148,14 +1149,27 @@ def test_register_runtime_device_client_uses_device_contract() -> None:
         "22222222-2222-4222-8222-222222222222",
     )
     assert request.call_args.kwargs["tenant"] == "tenant-1"
-    assert request.call_args.kwargs["json"]["client"] == {
+    client_payload = request.call_args.kwargs["json"]["client"]
+    assert client_payload == {
         "name": "codex",
         "version": None,
         "profile": "default",
         "runner_name": "lightnow-local-proxy",
         "runner_version": None,
+        "runner_install_method": client_payload["runner_install_method"],
+        "runner_latest_version": None,
+        "runner_update_status": "unknown",
+        "runner_update_checked_at": None,
         "transport": "stdio",
     }
+    assert client_payload["runner_install_method"] in {
+        "homebrew",
+        "pipx",
+        "uv",
+        "unknown",
+    }
+    assert request.call_args.kwargs["json"]["device"]["cli_version"] == __version__
+    assert request.call_args.kwargs["json"]["device"]["cli_update_status"] == "unknown"
 
 
 def test_sync_reuses_ids_and_registers_only_after_writing_files(
@@ -2282,6 +2296,16 @@ def test_build_local_proxy_config_can_pin_tenant_context() -> None:
     assert payload["local_proxy"]["profile"] == "engineering"
     assert payload["local_proxy"]["client_name"] == "codex"
     assert payload["local_proxy"]["runner_name"] == "lightnow-local-proxy"
+    assert payload["local_proxy"]["cli_version"] == __version__
+    assert payload["local_proxy"]["cli_install_method"] in {
+        "homebrew",
+        "pipx",
+        "uv",
+        "unknown",
+    }
+    assert payload["local_proxy"]["update_state_path"].endswith(
+        "/.lightnow/update-state.json"
+    )
     assert (
         payload["registry_api"]["base_url"]
         == "https://registry-api.lightnow.local/v0.1"

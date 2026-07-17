@@ -73,6 +73,7 @@ def test_cli_help(runner):
     assert "logout" in result.stdout
     assert "whoami" in result.stdout
     assert "context" in result.stdout
+    assert "update" in result.stdout
     assert "list" not in result.stdout
     assert "│ auth " not in result.stdout
     assert "│ integrations " not in result.stdout
@@ -105,6 +106,7 @@ def test_login_help_is_customer_friendly(runner):
         "sync",
         "config-status",
         "run",
+        "update",
     ],
 )
 def test_each_public_command_has_help(command, runner):
