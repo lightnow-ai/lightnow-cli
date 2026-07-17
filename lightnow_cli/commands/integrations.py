@@ -23,6 +23,7 @@ import yaml
 from rich.console import Console
 from typing_extensions import Annotated
 
+from .. import __version__, updates
 from ..authenticated_http import (
     authentication_error_from_response,
     request_with_refresh,
@@ -1207,6 +1208,11 @@ def build_local_proxy_config(
         "client_instance_id": client_instance_id,
         "device_hostname": socket.gethostname(),
         "device_platform": runtime_device_platform(),
+        "cli_version": __version__,
+        "cli_install_method": updates.detect_install_method(
+            "lightnow-cli", shutil.which("lightnow") or sys.argv[0]
+        ),
+        "update_state_path": str(updates.UPDATE_STATE_PATH),
         "telemetry_enabled": True,
     }
     if isinstance(local_proxy_settings, dict):
@@ -1298,6 +1304,13 @@ def register_runtime_device_client(
                 "device": {
                     "reported_hostname": socket.gethostname(),
                     "platform": runtime_device_platform(),
+                    "cli_version": __version__,
+                    "cli_install_method": updates.detect_install_method(
+                        "lightnow-cli", shutil.which("lightnow") or sys.argv[0]
+                    ),
+                    "cli_latest_version": None,
+                    "cli_update_status": "unknown",
+                    "cli_update_checked_at": None,
                 },
                 "client": {
                     "name": client,
@@ -1305,6 +1318,12 @@ def register_runtime_device_client(
                     "profile": profile,
                     "runner_name": "lightnow-local-proxy",
                     "runner_version": None,
+                    "runner_install_method": updates.detect_install_method(
+                        "lightnow-proxy", local_proxy_command()
+                    ),
+                    "runner_latest_version": None,
+                    "runner_update_status": "unknown",
+                    "runner_update_checked_at": None,
                     "transport": transport,
                 },
             },

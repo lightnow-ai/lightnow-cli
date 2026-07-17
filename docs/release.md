@@ -38,7 +38,9 @@ Normal release flow:
    distributions through Trusted Publishing.
 6. After PyPI succeeds, the release workflow dispatches the exact published
    version to `lightnow-ai/homebrew-tap`. The tap regenerates, audits, installs,
-   and tests the formula before committing it.
+   and tests the formula before committing it together with `releases.json`.
+   The public catalog advances only after the Homebrew artifact is verified,
+   so `lightnow update` never advertises a release that the tap cannot install.
 
 Manual release checklist for fallback or first-time setup:
 
@@ -70,9 +72,14 @@ Manual release checklist for fallback or first-time setup:
    - a GitHub Release is created with generated release notes and distribution artifacts,
    - PyPI publish succeeds through Trusted Publishing.
 8. Verify the `Update formula` workflow in `lightnow-ai/homebrew-tap`. For a
-   recovery run, dispatch it manually with formula `lightnow-cli` and the exact
-   already-published version; it uses the same generation and verification path
-   as the automatic release dispatch.
+    recovery run, dispatch it manually with formula `lightnow-cli` and the exact
+    already-published version; it uses the same generation and verification path
+    as the automatic release dispatch.
+9. Verify the catalog and managed update path:
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/lightnow-ai/homebrew-tap/main/releases.json
+   lightnow update --check
+   ```
 
 Do not publish with long-lived local PyPI tokens.
 

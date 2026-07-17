@@ -3,8 +3,19 @@
 import typer
 from typing_extensions import Annotated
 
-from . import __version__
-from .commands import auth, context, integrations, publish, query, runner, validate
+from . import __version__, updates
+from .commands import (
+    auth,
+    context,
+    integrations,
+    publish,
+    query,
+    runner,
+)
+from .commands import updates as update_commands
+from .commands import (
+    validate,
+)
 from .tls import configure_tls_trust_store
 
 configure_tls_trust_store()
@@ -29,6 +40,8 @@ app.command("import-config")(integrations.import_config)
 app.command("sync")(integrations.sync)
 app.command("config-status")(integrations.config_status)
 app.command("run")(runner.run)
+app.command("update")(update_commands.update)
+app.command("_refresh-update-state", hidden=True)(update_commands.refresh_update_state)
 
 
 def version_callback(value: bool) -> None:
@@ -45,7 +58,14 @@ def main(
     ] = False,
 ) -> None:
     """LightNow CLI."""
-    pass
+    if updates.should_check_automatically():
+        outdated = updates.cached_outdated_packages(updates.read_update_state())
+        if outdated:
+            typer.echo(
+                f"LightNow update available for {', '.join(outdated)}. Run `lightnow update`.",
+                err=True,
+            )
+        updates.start_background_refresh()
 
 
 def cli() -> None:
