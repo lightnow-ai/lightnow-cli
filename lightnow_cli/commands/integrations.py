@@ -1214,10 +1214,14 @@ def build_local_proxy_config(
         ),
         "update_state_path": str(updates.UPDATE_STATE_PATH),
         "telemetry_enabled": True,
+        "capture_tool_arguments": True,
     }
     if isinstance(local_proxy_settings, dict):
         local_proxy_config["telemetry_enabled"] = (
             local_proxy_settings.get("telemetryEnabled") is not False
+        )
+        local_proxy_config["capture_tool_arguments"] = (
+            local_proxy_settings.get("captureToolArguments") is not False
         )
         local_proxy_config["allow_unmanaged_client_servers"] = (
             local_proxy_settings.get("allowUnmanagedClientServers") is not False
