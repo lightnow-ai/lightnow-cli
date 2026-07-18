@@ -4,6 +4,14 @@ All notable changes to the LightNow CLI are documented here.
 
 This project follows semantic versioning.
 
+## [1.5.0](https://github.com/lightnow-ai/lightnow-cli/compare/v1.4.0...v1.5.0) (2026-07-18)
+
+
+### Features
+
+* **#15:** configure runtime tool argument capture ([c83ff54](https://github.com/lightnow-ai/lightnow-cli/commit/c83ff54d4373bde152cca68a40f1c4e802e79e86))
+* **sync:** configure tool argument capture ([09f591a](https://github.com/lightnow-ai/lightnow-cli/commit/09f591a94cb014998681223147a79ffcaff062e8))
+
 ## [1.4.0](https://github.com/lightnow-ai/lightnow-cli/compare/v1.3.1...v1.4.0) (2026-07-17)
 
 
