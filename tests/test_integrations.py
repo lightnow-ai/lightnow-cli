@@ -2091,6 +2091,7 @@ def test_sync_from_settings_uses_local_proxy_policy() -> None:
                         "managedClients": ["codex"],
                         "allowUnmanagedClientServers": False,
                         "telemetryEnabled": True,
+                        "captureToolArguments": False,
                         "policyMode": "enforce",
                     },
                 },
@@ -2120,6 +2121,7 @@ def test_sync_from_settings_uses_local_proxy_policy() -> None:
     assert proxy_payload["local_proxy"]["policy_mode"] == "enforce"
     assert proxy_payload["local_proxy"]["allow_unmanaged_client_servers"] is False
     assert proxy_payload["local_proxy"]["telemetry_enabled"] is True
+    assert proxy_payload["local_proxy"]["capture_tool_arguments"] is False
     assert "policy is enforce" in result.stdout
 
 
