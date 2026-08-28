@@ -13,9 +13,7 @@ from .commands import (
     runner,
 )
 from .commands import updates as update_commands
-from .commands import (
-    validate,
-)
+from .commands import validate
 from .tls import configure_tls_trust_store
 
 configure_tls_trust_store()
