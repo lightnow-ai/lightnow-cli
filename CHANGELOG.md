@@ -4,6 +4,13 @@ All notable changes to the LightNow CLI are documented here.
 
 This project follows semantic versioning.
 
+## [1.5.1](https://github.com/lightnow-ai/lightnow-cli/compare/v1.5.0...v1.5.1) (2026-09-02)
+
+
+### Bug Fixes
+
+* **renovate:** constrain Python dependency names ([#22](https://github.com/lightnow-ai/lightnow-cli/issues/22)) ([a48bb79](https://github.com/lightnow-ai/lightnow-cli/commit/a48bb7935184d56f169c850d1fc478cde0c1667e))
+
 ## [1.5.0](https://github.com/lightnow-ai/lightnow-cli/compare/v1.4.0...v1.5.0) (2026-07-18)
 
 
