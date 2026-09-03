@@ -226,8 +226,12 @@ files:
 lightnow sync --client codex --runner
 ```
 
-For daemon-style local testing, `--local-proxy-transport http` writes a
-localhost Streamable HTTP entry instead of a stdio auto-start entry.
+Local Proxy Mode always starts `lightnow-proxy` over stdio. To configure a
+separately hosted proxy for Codex, pass its HTTPS MCP endpoint explicitly:
+
+```bash
+lightnow sync --client codex --remote-proxy-url https://proxy.example.com/mcp
+```
 
 Note: Google has moved individual Gemini CLI users to Antigravity. LightNow
 keeps `gemini-cli` support for Enterprise/API-key environments, but
