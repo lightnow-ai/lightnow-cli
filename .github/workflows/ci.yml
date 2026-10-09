@@ -73,6 +73,25 @@ jobs:
       - name: Build and check distributions
         run: make package
 
+      - name: Verify distribution provenance contract
+        run: python -m unittest discover -s ci -p 'test_*.py'
+
+      - name: Bind PR distribution provenance
+        if: github.event_name == 'pull_request'
+        env:
+          ARTIFACT_REPOSITORY: ${{ github.repository }}
+          ARTIFACT_PR_NUMBER: ${{ github.event.pull_request.number }}
+          ARTIFACT_HEAD_REVISION: ${{ github.event.pull_request.head.sha }}
+          ARTIFACT_RUN_ID: ${{ github.run_id }}
+          ARTIFACT_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          python ci/create_client_artifact.py --component cli \
+            --repository "$ARTIFACT_REPOSITORY" \
+            --pr-number "$ARTIFACT_PR_NUMBER" \
+            --head-revision "$ARTIFACT_HEAD_REVISION" \
+            --run-id "$ARTIFACT_RUN_ID" \
+            --run-attempt "$ARTIFACT_RUN_ATTEMPT"
+
       - name: Upload distributions
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
