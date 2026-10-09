@@ -7,6 +7,7 @@ import json
 import secrets
 import time
 import webbrowser
+from pathlib import Path
 from typing import Any, Dict, Optional, cast
 
 import httpx
@@ -16,13 +17,16 @@ from rich.console import Console
 from typing_extensions import Annotated
 
 from ..config import (
+    DEFAULT_ADMIN_API_URL,
     DEFAULT_CLIENT_ID,
     DEFAULT_ISSUER,
+    DEFAULT_REGISTRY_API_URL,
     LOCAL_ADMIN_API_URL,
     LOCAL_ISSUER,
     LOCAL_REGISTRY_API_URL,
     config_manager,
 )
+from ..target import ConnectionTarget, load_target, validate_https_url
 
 console = Console()
 app = typer.Typer(help="Authentication commands")
@@ -70,6 +74,10 @@ def pkce_challenge(verifier: str) -> str:
 
 async def discover_oidc_endpoints(issuer: str) -> Dict[str, str]:
     """Discover the OIDC endpoints required by the CLI."""
+    try:
+        issuer = validate_https_url(issuer)
+    except ValueError:
+        raise AuthError("OIDC issuer must be a credential-free HTTPS URL.") from None
     async with httpx.AsyncClient(timeout=AUTH_HTTP_TIMEOUT) as client:
         try:
             discovery_response = await client.get(
@@ -79,6 +87,10 @@ async def discover_oidc_endpoints(issuer: str) -> Dict[str, str]:
             discovery = discovery_response.json()
             if not isinstance(discovery, dict):
                 raise AuthError("OIDC discovery response is not a JSON object")
+            if discovery.get("issuer") != issuer:
+                raise AuthError(
+                    "OIDC discovery issuer does not match the selected issuer."
+                )
         except httpx.HTTPError as e:
             raise AuthError(
                 f"Failed to discover OIDC endpoints: {describe_http_error(e)}"
@@ -91,12 +103,19 @@ async def discover_oidc_endpoints(issuer: str) -> Dict[str, str]:
     if not device_authorization_endpoint or not token_endpoint:
         raise AuthError("OIDC provider does not support device code flow")
 
-    endpoints = {
-        "device_authorization_endpoint": cast(str, device_authorization_endpoint),
-        "token_endpoint": cast(str, token_endpoint),
-    }
-    if isinstance(userinfo_endpoint, str) and userinfo_endpoint:
-        endpoints["userinfo_endpoint"] = userinfo_endpoint
+    try:
+        endpoints = {
+            "device_authorization_endpoint": validate_https_url(
+                device_authorization_endpoint
+            ),
+            "token_endpoint": validate_https_url(token_endpoint),
+        }
+        if userinfo_endpoint is not None:
+            endpoints["userinfo_endpoint"] = validate_https_url(userinfo_endpoint)
+    except ValueError:
+        raise AuthError(
+            "OIDC discovery endpoints must be credential-free HTTPS URLs."
+        ) from None
     return endpoints
 
 
@@ -111,7 +130,7 @@ async def device_code_flow(issuer: str, client_id: str) -> Dict[str, Any]:
                 endpoints["device_authorization_endpoint"],
                 data={
                     "client_id": client_id,
-                    "scope": "openid profile email",
+                    "scope": "openid profile email organization:*",
                     "code_challenge": pkce_challenge(code_verifier),
                     "code_challenge_method": "S256",
                 },
@@ -295,6 +314,7 @@ def persist_refreshed_token(config: Any, token_data: Dict[str, Any]) -> str:
             else config.refresh_token
         ),
         None,
+        expected_binding=config_manager.connection_binding(config),
     )
     return refreshed_token
 
@@ -376,21 +396,43 @@ def login(
             hidden=True,
         ),
     ] = None,
+    target: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--target",
+            help="Credential-free JSON connection target for an isolated environment.",
+        ),
+    ] = None,
 ) -> None:
     """Authenticate with LightNow."""
     try:
-        resolved_issuer = issuer or (LOCAL_ISSUER if local else DEFAULT_ISSUER)
-        resolved_client_id = client_id or DEFAULT_CLIENT_ID
-        resolved_registry_api_url = LOCAL_REGISTRY_API_URL if local else None
-        resolved_admin_api_url = LOCAL_ADMIN_API_URL if local else None
-
-        # Store auth config
-        config_manager.set_auth_config(
-            resolved_issuer,
-            resolved_client_id,
-            resolved_registry_api_url,
-            resolved_admin_api_url,
-        )
+        if target is not None:
+            if local or issuer is not None or client_id is not None:
+                raise AuthError(
+                    "--target cannot be combined with --local, --issuer or --client-id."
+                )
+            try:
+                connection = load_target(target)
+            except ValueError as exc:
+                raise AuthError(str(exc)) from None
+        else:
+            resolved_issuer = LOCAL_ISSUER if local else DEFAULT_ISSUER
+            if issuer is not None and issuer.rstrip("/") != resolved_issuer:
+                raise AuthError("A custom issuer requires --target with both API URLs.")
+            if client_id is not None and (
+                not client_id
+                or any(
+                    character.isspace() or ord(character) < 32
+                    for character in client_id
+                )
+            ):
+                raise AuthError("Client ID must be a nonempty identifier.")
+            connection = ConnectionTarget(
+                resolved_issuer,
+                client_id or DEFAULT_CLIENT_ID,
+                LOCAL_REGISTRY_API_URL if local else DEFAULT_REGISTRY_API_URL,
+                LOCAL_ADMIN_API_URL if local else DEFAULT_ADMIN_API_URL,
+            )
 
         # Perform device code flow
         if local:
@@ -399,23 +441,27 @@ def login(
             )
         else:
             console.print("[bold blue]Starting LightNow authentication...[/bold blue]")
-        token_data = asyncio.run(device_code_flow(resolved_issuer, resolved_client_id))
+        token_data = asyncio.run(
+            device_code_flow(connection.issuer, connection.client_id)
+        )
         token = token_data.get("access_token")
         if not isinstance(token, str) or token == "":
             raise AuthError("OIDC token response did not include an access token.")
         refresh_token = token_data.get("refresh_token")
 
         # Fetch user info from the issuer instead of trusting local JWT claims.
-        user_info = asyncio.run(fetch_user_info(resolved_issuer, token))
+        user_info = asyncio.run(fetch_user_info(connection.issuer, token))
+        subject = user_info.get("sub")
+        if not isinstance(subject, str) or not subject.strip():
+            raise AuthError("OIDC userinfo response did not include a valid subject.")
 
         # Store token and user info
-        config_manager.set_token(
+        config_manager.commit_login(
+            connection,
             token,
             refresh_token if isinstance(refresh_token, str) else None,
             user_info,
-            update_active_session=False,
         )
-        config_manager.persist_current_session(user_info)
 
         console.print("[bold green]✓ Authentication successful![/bold green]")
         if user_info:
