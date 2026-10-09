@@ -51,12 +51,14 @@ def version_callback(value: bool) -> None:
 
 @app.callback()
 def main(
+    ctx: typer.Context,
     version: Annotated[
         bool, typer.Option("--version", callback=version_callback, help="Show version")
     ] = False,
 ) -> None:
     """LightNow CLI."""
-    if updates.should_check_automatically():
+    # Login validates its complete target before any network or state mutation.
+    if ctx.invoked_subcommand != "login" and updates.should_check_automatically():
         outdated = updates.cached_outdated_packages(updates.read_update_state())
         if outdated:
             typer.echo(

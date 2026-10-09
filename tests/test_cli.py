@@ -10,13 +10,16 @@ from typer.testing import CliRunner
 
 from lightnow_cli import __version__
 from lightnow_cli.config import (
+    DEFAULT_ADMIN_API_URL,
     DEFAULT_CLIENT_ID,
     DEFAULT_ISSUER,
+    DEFAULT_REGISTRY_API_URL,
     LOCAL_ADMIN_API_URL,
     LOCAL_ISSUER,
     LOCAL_REGISTRY_API_URL,
 )
 from lightnow_cli.main import app
+from lightnow_cli.target import ConnectionTarget
 
 
 @pytest.fixture
@@ -456,13 +459,9 @@ def test_validate_command_no_files(runner):
 
 @patch("lightnow_cli.commands.auth.device_code_flow")
 @patch("lightnow_cli.commands.auth.fetch_user_info")
-@patch("lightnow_cli.config.config_manager.set_auth_config")
-@patch("lightnow_cli.config.config_manager.set_token")
-@patch("lightnow_cli.config.config_manager.persist_current_session")
+@patch("lightnow_cli.config.config_manager.commit_login")
 def test_login_command_success(
-    mock_persist_session,
-    mock_set_token,
-    mock_set_auth_config,
+    mock_commit_login,
     mock_fetch_user_info,
     mock_device_flow,
     runner,
@@ -485,24 +484,26 @@ def test_login_command_success(
     assert "Authentication successful" in result.stdout
 
     # Verify mocks were called
-    mock_set_auth_config.assert_called_once_with(
-        DEFAULT_ISSUER, DEFAULT_CLIENT_ID, None, None
-    )
     mock_device_flow.assert_called_once_with(DEFAULT_ISSUER, DEFAULT_CLIENT_ID)
     mock_fetch_user_info.assert_called_once_with(DEFAULT_ISSUER, "mock-access-token")
-    mock_set_token.assert_called_once()
-    mock_persist_session.assert_called_once_with(mock_fetch_user_info.return_value)
+    mock_commit_login.assert_called_once_with(
+        ConnectionTarget(
+            DEFAULT_ISSUER,
+            DEFAULT_CLIENT_ID,
+            DEFAULT_REGISTRY_API_URL,
+            DEFAULT_ADMIN_API_URL,
+        ),
+        "mock-access-token",
+        "mock-refresh-token",
+        mock_fetch_user_info.return_value,
+    )
 
 
 @patch("lightnow_cli.commands.auth.device_code_flow")
 @patch("lightnow_cli.commands.auth.fetch_user_info")
-@patch("lightnow_cli.config.config_manager.set_auth_config")
-@patch("lightnow_cli.config.config_manager.set_token")
-@patch("lightnow_cli.config.config_manager.persist_current_session")
+@patch("lightnow_cli.config.config_manager.commit_login")
 def test_login_command_local_profile(
-    mock_persist_session,
-    mock_set_token,
-    mock_set_auth_config,
+    mock_commit_login,
     mock_fetch_user_info,
     mock_device_flow,
     runner,
@@ -521,16 +522,16 @@ def test_login_command_local_profile(
 
     assert result.exit_code == 0
     assert "Starting local LightNow authentication" in result.stdout
-    mock_set_auth_config.assert_called_once_with(
-        LOCAL_ISSUER,
-        DEFAULT_CLIENT_ID,
-        LOCAL_REGISTRY_API_URL,
-        LOCAL_ADMIN_API_URL,
-    )
     mock_device_flow.assert_called_once_with(LOCAL_ISSUER, DEFAULT_CLIENT_ID)
     mock_fetch_user_info.assert_called_once_with(LOCAL_ISSUER, "mock-access-token")
-    mock_set_token.assert_called_once()
-    mock_persist_session.assert_called_once_with(mock_fetch_user_info.return_value)
+    mock_commit_login.assert_called_once_with(
+        ConnectionTarget(
+            LOCAL_ISSUER, DEFAULT_CLIENT_ID, LOCAL_REGISTRY_API_URL, LOCAL_ADMIN_API_URL
+        ),
+        "mock-access-token",
+        "mock-refresh-token",
+        mock_fetch_user_info.return_value,
+    )
 
 
 @patch("lightnow_cli.config.config_manager.load_config")
@@ -684,9 +685,9 @@ def test_status_command_expired_token(mock_load_config, runner):
 
 
 @patch("lightnow_cli.commands.auth.device_code_flow")
-@patch("lightnow_cli.commands.auth.config_manager.set_auth_config")
+@patch("lightnow_cli.commands.auth.config_manager.commit_login")
 def test_login_command_missing_access_token(
-    mock_set_auth_config, mock_device_flow, runner
+    mock_commit_login, mock_device_flow, runner
 ):
     """Login fails clearly when the token response is malformed."""
     mock_device_flow.return_value = {"refresh_token": "refresh-token"}
@@ -695,7 +696,7 @@ def test_login_command_missing_access_token(
 
     assert result.exit_code == 1
     assert "OIDC token response did not include an access token" in result.stdout
-    mock_set_auth_config.assert_called_once()
+    mock_commit_login.assert_not_called()
 
 
 @patch("lightnow_cli.client.MCPRegistryClient.publish_server")

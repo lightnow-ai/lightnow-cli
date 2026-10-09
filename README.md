@@ -73,6 +73,47 @@ your session with:
 lightnow status
 ```
 
+For an isolated LightNow environment, obtain a credential-free connection target
+from its operator and select it explicitly:
+
+```bash
+lightnow login --target ./connection-target.json
+```
+
+The complete JSON schema is:
+
+```json
+{
+  "schemaVersion": 1,
+  "issuer": "https://auth.example.test/realms/example",
+  "clientId": "lightnow-cli",
+  "registryApiUrl": "https://registry.example.test/v0.1",
+  "adminApiUrl": "https://admin.example.test/v0/portal"
+}
+```
+
+All five fields are required; additional fields and embedded credentials are
+rejected. URLs must use HTTPS without credentials, query strings or fragments.
+The environment operator provisions the public OAuth device-flow client; the CLI
+does not register clients. Authentication remains at the product issuer, which
+may broker an external identity provider through its browser flow.
+The device request includes `openid profile email organization:*`; the operator
+must assign the standard `organization` client scope so existing organization
+memberships are available to the scoped APIs.
+
+`--target` cannot be combined with `--local`, `--issuer` or `--client-id`. Custom
+issuers require a complete target and cannot silently use production API defaults.
+Normal `lightnow login` and `lightnow login --local` remain available.
+
+The selected target and named session are saved only after device authorization
+and userinfo verification succeed. OIDC discovery must identify the selected
+issuer and expose credential-free HTTPS endpoints. Failed login preserves the previous connection.
+A different environment or account returns to personal context; logging into the
+same target and account preserves the selected organization. Organization selection,
+profile requests and generated Local Proxy connections use the selected API URLs.
+For acceptance runs, use a separate container user/home and explicit client and
+proxy configuration paths so existing desktop connections are not modified.
+
 ## Find MCP Servers
 
 Search the LightNow Registry:

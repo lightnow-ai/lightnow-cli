@@ -44,6 +44,7 @@ class FakeDeviceClient:
         return FakeResponse(
             200,
             {
+                "issuer": "https://auth.lightnow.local/realms/lightnow",
                 "device_authorization_endpoint": "https://auth.lightnow.local/device",
                 "token_endpoint": "https://auth.lightnow.local/token",
             },
@@ -52,6 +53,7 @@ class FakeDeviceClient:
     async def post(self, url: str, data: dict[str, object]) -> FakeResponse:
         if url.endswith("/device"):
             assert data["client_id"] == "lightnow-cli"
+            assert data["scope"] == "openid profile email organization:*"
             assert data["code_challenge_method"] == "S256"
             assert isinstance(data["code_challenge"], str)
             assert data["code_challenge"] != ""
@@ -290,7 +292,7 @@ def test_require_access_token_refreshes_expired_token(monkeypatch) -> None:
     monkeypatch.setattr(
         auth.config_manager,
         "set_token",
-        lambda access, refresh_token=None, user_info=None: stored.append(
+        lambda access, refresh_token=None, user_info=None, **kwargs: stored.append(
             (access, refresh_token)
         ),
     )
@@ -330,7 +332,7 @@ def test_require_access_token_ignores_cached_user_info_for_expiration(
     monkeypatch.setattr(
         auth.config_manager,
         "set_token",
-        lambda access, refresh_token=None, user_info=None: stored.append(
+        lambda access, refresh_token=None, user_info=None, **kwargs: stored.append(
             (access, refresh_token, user_info)
         ),
     )

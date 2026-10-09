@@ -110,7 +110,7 @@ def test_token_methods(config_manager):
     assert config.user_info == {"sub": "456"}
 
 
-def test_persist_current_session_is_stable_per_issuer_and_subject(config_manager):
+def test_persist_current_session_is_stable_per_target_and_subject(config_manager):
     config_manager.save_config(
         Config(
             access_token="access",
@@ -122,7 +122,9 @@ def test_persist_current_session_is_stable_per_issuer_and_subject(config_manager
     )
 
     first = config_manager.persist_current_session()
-    config_manager.load_config().access_token = "new-access"
+    config_manager.set_token(
+        "new-access", user_info={"sub": "user-1", "email": "developer@example.test"}
+    )
     second = config_manager.persist_current_session()
 
     assert first["session_id"] == second["session_id"]
