@@ -8,6 +8,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 import yaml
+from click import unstyle
+from rich.console import Console
+from rich.theme import Theme
+from typer import rich_utils
 from typer.testing import CliRunner
 
 from lightnow_cli import updates
@@ -284,9 +288,25 @@ def test_selected_target_flows_into_named_local_proxy_connection(manager):
     assert "old-access" not in json.dumps(proxy)
 
 
-def test_target_login_help_is_explicit():
-    result = CliRunner().invoke(app, ["login", "--help"])
-    assert result.exit_code == 0 and "--target" in result.stdout
+@pytest.mark.parametrize("colored", [False, True])
+def test_target_login_help_is_explicit(monkeypatch, colored):
+    def console(stderr=False):
+        return Console(
+            force_terminal=colored,
+            color_system="standard" if colored else None,
+            no_color=False,
+            stderr=stderr,
+            highlighter=rich_utils.highlighter,
+            theme=Theme(
+                {"option": rich_utils.STYLE_OPTION, "switch": rich_utils.STYLE_SWITCH}
+            ),
+        )
+
+    monkeypatch.setattr(rich_utils, "_get_rich_console", console)
+    result = CliRunner().invoke(app, ["login", "--help"], color=colored)
+    assert result.exit_code == 0
+    assert ("\x1b[" in result.stdout) is colored
+    assert "--target" in unstyle(result.stdout)
 
 
 def test_login_never_starts_independent_update_refresh(manager, monkeypatch, tmp_path):
