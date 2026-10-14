@@ -27,6 +27,7 @@ from lightnow_cli.commands.integrations import (
     analyze_client_config_file,
     build_local_proxy_config,
     build_local_proxy_export,
+    build_remote_proxy_export,
     build_runner_export,
     configure_vscode_virtual_tools,
     default_local_proxy_config_path,
@@ -45,7 +46,7 @@ from lightnow_cli.commands.integrations import (
     redact,
     register_runtime_device_client,
     render_local_proxy_codex_stdio_toml,
-    render_local_proxy_codex_toml,
+    render_remote_proxy_codex_toml,
     render_runner_config,
     secure_write_text,
     warm_local_proxy_tools_cache,
@@ -470,7 +471,6 @@ def test_local_proxy_export_for_codex_writes_one_stdio_server() -> None:
     generated = build_local_proxy_export(
         client="codex",
         export_format="toml",
-        local_proxy_url="http://127.0.0.1:8080/mcp",
         local_proxy_config_path=Path("/tmp/lightnow/mcp-proxy.yaml"),
     )
     payload = tomllib.loads(generated)
@@ -482,8 +482,6 @@ def test_local_proxy_export_for_codex_writes_one_stdio_server() -> None:
                 "args": [
                     "--config",
                     "/tmp/lightnow/mcp-proxy.yaml",
-                    "--transport",
-                    "stdio",
                 ],
                 "default_tools_approval_mode": "approve",
             }
@@ -492,20 +490,19 @@ def test_local_proxy_export_for_codex_writes_one_stdio_server() -> None:
     assert "url" not in generated
 
 
-def test_local_proxy_export_for_codex_can_write_http_server() -> None:
-    """HTTP Local Proxy Mode remains available for daemon-style clients."""
-    generated = build_local_proxy_export(
+def test_remote_proxy_export_for_codex_writes_https_server() -> None:
+    """Remote Proxy Mode writes one explicit HTTPS Codex endpoint."""
+    generated = build_remote_proxy_export(
         client="codex",
         export_format="toml",
-        local_proxy_url="http://127.0.0.1:8080/mcp",
-        local_proxy_transport="http",
+        remote_proxy_url="https://proxy.lightnow.ai/mcp",
     )
     payload = tomllib.loads(generated)
 
     assert payload == {
         "mcp_servers": {
             "lightnow": {
-                "url": "http://127.0.0.1:8080/mcp",
+                "url": "https://proxy.lightnow.ai/mcp",
                 "default_tools_approval_mode": "approve",
             }
         }
@@ -518,7 +515,6 @@ def test_local_proxy_export_for_claude_desktop_writes_one_stdio_server() -> None
     generated = build_local_proxy_export(
         client="claude-desktop",
         export_format="json",
-        local_proxy_url="http://127.0.0.1:8080/mcp",
         local_proxy_config_path=Path("/tmp/lightnow/mcp-proxy.yaml"),
     )
     payload = json.loads(generated)
@@ -528,8 +524,6 @@ def test_local_proxy_export_for_claude_desktop_writes_one_stdio_server() -> None
     assert payload["mcpServers"]["LightNow"]["args"] == [
         "--config",
         "/tmp/lightnow/mcp-proxy.yaml",
-        "--transport",
-        "stdio",
     ]
 
 
@@ -538,7 +532,6 @@ def test_local_proxy_export_for_antigravity_writes_one_stdio_server() -> None:
     generated = build_local_proxy_export(
         client="antigravity",
         export_format="json",
-        local_proxy_url="http://127.0.0.1:8080/mcp",
         local_proxy_config_path=Path("/tmp/lightnow/antigravity.yaml"),
     )
     payload = json.loads(generated)
@@ -548,8 +541,6 @@ def test_local_proxy_export_for_antigravity_writes_one_stdio_server() -> None:
     assert payload["mcpServers"]["LightNow"]["args"] == [
         "--config",
         "/tmp/lightnow/antigravity.yaml",
-        "--transport",
-        "stdio",
     ]
 
 
@@ -558,7 +549,6 @@ def test_local_proxy_export_for_gemini_cli_writes_one_stdio_server() -> None:
     generated = build_local_proxy_export(
         client="gemini-cli",
         export_format="json",
-        local_proxy_url="http://127.0.0.1:8080/mcp",
         local_proxy_config_path=Path("/tmp/lightnow/mcp-proxy.yaml"),
     )
     payload = json.loads(generated)
@@ -568,8 +558,6 @@ def test_local_proxy_export_for_gemini_cli_writes_one_stdio_server() -> None:
     assert payload["mcpServers"]["LightNow"]["args"] == [
         "--config",
         "/tmp/lightnow/mcp-proxy.yaml",
-        "--transport",
-        "stdio",
     ]
 
 
@@ -609,12 +597,12 @@ def test_named_connection_alias_requires_a_prefix_separator() -> None:
         default_local_proxy_config_path("codex", "lightnow1")
 
 
-def test_analyzes_managed_codex_local_proxy_config() -> None:
-    """Posture scanner recognizes a clean Local Proxy config."""
+def test_analyzes_managed_codex_remote_proxy_config() -> None:
+    """Posture scanner recognizes a clean Remote Proxy config."""
     status = analyze_client_config_content(
         client="codex",
         export_format="toml",
-        content=render_local_proxy_codex_toml("http://127.0.0.1:8080/mcp"),
+        content=render_remote_proxy_codex_toml("https://proxy.lightnow.ai/mcp"),
         expected_proxy_config_path=Path("/tmp/lightnow/codex.yaml"),
     )
 
@@ -675,8 +663,6 @@ def test_analyzes_mixed_json_config_with_unmanaged_servers() -> None:
                     "args": [
                         "--config",
                         "/tmp/lightnow/claude.yaml",
-                        "--transport",
-                        "stdio",
                     ],
                 },
                 "github": {"command": "docker", "args": ["run", "github"]},
@@ -715,8 +701,6 @@ def test_config_status_command_prints_machine_readable_posture() -> None:
                             "args": [
                                 "--config",
                                 f"{tmp}/proxy.yaml",
-                                "--transport",
-                                "stdio",
                             ],
                         }
                     }
@@ -781,8 +765,6 @@ def test_analyzes_proxy_config_path_mismatch() -> None:
                     "args": [
                         "--config",
                         "/tmp/lightnow/old.yaml",
-                        "--transport",
-                        "stdio",
                     ],
                 }
             }
@@ -799,26 +781,20 @@ def test_analyzes_proxy_config_path_mismatch() -> None:
     assert status["warnings"] == ["proxy_config_path_mismatch"]
 
 
-def test_local_proxy_export_rejects_non_local_urls() -> None:
-    """Local Proxy Mode must not silently configure a hosted endpoint."""
+def test_remote_proxy_export_rejects_insecure_or_invalid_urls() -> None:
+    """Remote Proxy Mode accepts only well-formed HTTPS endpoints."""
     for url in [
-        "https://proxy.lightnow.ai/mcp",
         "http://proxy.lightnow.ai/mcp",
-        "https://localhost:8080/mcp",
         "http://localhost/mcp",
-        "http://localhost:8080.evil.test/mcp",
+        "https://user:password@proxy.lightnow.ai/mcp",
+        "https://proxy.lightnow.ai/mcp#fragment",
     ]:
-        try:
-            build_local_proxy_export(
+        with pytest.raises(ValueError, match="valid HTTPS URL"):
+            build_remote_proxy_export(
                 client="codex",
                 export_format="toml",
-                local_proxy_url=url,
-                local_proxy_transport="http",
+                remote_proxy_url=url,
             )
-        except ValueError as exc:
-            assert "localhost" in str(exc)
-        else:
-            raise AssertionError(f"expected ValueError for {url}")
 
 
 def test_local_proxy_export_rejects_unsupported_clients() -> None:
@@ -827,7 +803,6 @@ def test_local_proxy_export_rejects_unsupported_clients() -> None:
         build_local_proxy_export(
             client="continue",
             export_format="yaml",
-            local_proxy_url="http://127.0.0.1:8080/mcp",
         )
     except ValueError as exc:
         assert (
@@ -838,11 +813,11 @@ def test_local_proxy_export_rejects_unsupported_clients() -> None:
         raise AssertionError("expected ValueError")
 
 
-def test_render_local_proxy_codex_toml_uses_approval_mode() -> None:
+def test_render_remote_proxy_codex_toml_uses_approval_mode() -> None:
     """Codex non-interactive tool calls require explicit approval config."""
-    generated = render_local_proxy_codex_toml("http://localhost:8080/mcp")
+    generated = render_remote_proxy_codex_toml("https://proxy.lightnow.ai/mcp")
 
-    assert 'url = "http://localhost:8080/mcp"' in generated
+    assert 'url = "https://proxy.lightnow.ai/mcp"' in generated
     assert 'default_tools_approval_mode = "approve"' in generated
 
 
@@ -1107,11 +1082,76 @@ def test_sync_local_proxy_dry_run_writes_one_codex_entry_without_fetching_export
     assert result.exit_code == 0
     assert "[mcp_servers.lightnow]" in result.stdout
     assert 'command = "lightnow-proxy"' in result.stdout
-    assert "--transport" in result.stdout
-    assert "stdio" in result.stdout
+    assert 'args = ["--config",' in result.stdout
+    assert "--transport" not in result.stdout
     assert 'default_tools_approval_mode = "approve"' in result.stdout
     assert "--server" not in result.stdout
     assert not target.exists()
+
+
+def test_sync_remote_proxy_dry_run_writes_one_codex_https_entry() -> None:
+    """Remote Proxy Mode writes only the configured hosted endpoint."""
+    runner = CliRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "config.toml"
+        with (
+            patch(
+                "lightnow_cli.commands.integrations.require_access_token",
+                return_value="token",
+            ),
+            patch(
+                "lightnow_cli.commands.integrations.fetch_profile_servers",
+                side_effect=AssertionError(
+                    "remote proxy sync must not fetch profile servers"
+                ),
+            ),
+            patch(
+                "lightnow_cli.commands.integrations.fetch_export",
+                side_effect=AssertionError(
+                    "remote proxy sync must not fetch client exports"
+                ),
+            ),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "sync",
+                    "--client",
+                    "codex",
+                    "--remote-proxy-url",
+                    "https://proxy.lightnow.ai/mcp",
+                    "--config-path",
+                    str(target),
+                    "--dry-run",
+                ],
+            )
+
+    assert result.exit_code == 0
+    assert "[mcp_servers.lightnow]" in result.stdout
+    assert 'url = "https://proxy.lightnow.ai/mcp"' in result.stdout
+    assert "command = " not in result.stdout
+    assert "--transport" not in result.stdout
+    assert not target.exists()
+
+
+def test_sync_remote_proxy_rejects_non_codex_client_before_login() -> None:
+    """Remote Proxy Mode fails clearly for clients without a remote URL writer."""
+    runner = CliRunner()
+
+    result = runner.invoke(
+        app,
+        [
+            "sync",
+            "--client",
+            "claude-desktop",
+            "--remote-proxy-url",
+            "https://proxy.lightnow.ai/mcp",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "Remote Proxy Mode currently supports Codex TOML" in result.stdout
+    assert "only." in result.stdout
 
 
 def test_client_instance_id_is_stable_for_an_existing_proxy_config() -> None:
@@ -1382,7 +1422,7 @@ def test_sync_local_proxy_rejects_runner_mode_conflict() -> None:
         )
 
     assert result.exit_code == 2
-    assert "either --runner or --local-proxy" in result.stdout
+    assert "Use only one of --runner, --local-proxy" in result.stdout
 
 
 def test_prepare_codex_local_proxy_config_removes_direct_mcp_servers() -> None:
@@ -1456,8 +1496,6 @@ def test_sync_local_proxy_replaces_existing_codex_mcp_servers() -> None:
                     "codex",
                     "--local-proxy",
                     "--yes",
-                    "--local-proxy-url",
-                    "http://localhost:8765/mcp",
                     "--local-proxy-config-path",
                     str(proxy_config),
                     "--config-path",
@@ -1475,17 +1513,13 @@ def test_sync_local_proxy_replaces_existing_codex_mcp_servers() -> None:
     assert "GITHUB_TOKEN" not in patched
     assert 'command = "lightnow-proxy"' in patched
     assert str(proxy_config) in patched
-    assert '"--transport", "stdio"' in patched
-    assert 'url = "http://localhost:8765/mcp"' not in patched
+    assert "--transport" not in patched
+    assert "url = " not in patched
     assert 'default_tools_approval_mode = "approve"' in patched
-    assert proxy_payload["server"] == {
-        "host": "localhost",
-        "port": 8765,
-        "public_url": "http://localhost:8765",
-    }
+    assert "server" not in proxy_payload
     assert proxy_payload["local_proxy"]["enabled"] is True
     assert proxy_payload["local_proxy"]["profile"] == "default"
-    assert proxy_payload["local_proxy"]["path"] == "/mcp"
+    assert "path" not in proxy_payload["local_proxy"]
     assert proxy_payload["local_proxy"]["sync_from_lightnow"] is True
     assert proxy_payload["local_proxy"]["client_name"] == "codex"
     assert proxy_payload["local_proxy"]["client_version"] is None
@@ -1515,7 +1549,7 @@ def test_sync_local_proxy_replaces_legacy_unmanaged_codex_connection_once() -> N
             'model = "gpt-5.5"\n\n'
             "[mcp_servers.lightnow]\n"
             'command = "lightnow-proxy"\n'
-            'args = ["--config", "/tmp/legacy.yaml", "--transport", "stdio"]\n\n'
+            'args = ["--config", "/tmp/legacy.yaml"]\n\n'
             "[mcp_servers.computer-use]\n"
             'command = "computer-use"\n\n'
             "[plugins.browser]\n"
@@ -1704,8 +1738,6 @@ def test_sync_local_proxy_replaces_existing_claude_desktop_mcp_servers() -> None
     assert patched["mcpServers"]["LightNow"]["args"] == [
         "--config",
         str(proxy_config),
-        "--transport",
-        "stdio",
     ]
     assert "secret" not in patched_text
     assert proxy_payload["local_proxy"]["client_name"] == "claude-desktop"
@@ -1775,8 +1807,6 @@ def test_sync_local_proxy_replaces_existing_claude_code_mcp_servers() -> None:
     assert patched["mcpServers"]["LightNow"]["args"] == [
         "--config",
         str(proxy_config),
-        "--transport",
-        "stdio",
     ]
     assert "secret" not in patched_text
     assert proxy_payload["local_proxy"]["client_name"] == "claude-code"
@@ -1804,8 +1834,6 @@ def test_warm_local_proxy_tools_cache_runs_proxy_warm_command() -> None:
         "/usr/bin/lightnow-proxy",
         "--config",
         "/tmp/lightnow/claude-code.yaml",
-        "--transport",
-        "stdio",
         "--warm-tools-cache",
     ]
 
@@ -1862,8 +1890,6 @@ def test_sync_local_proxy_replaces_existing_antigravity_mcp_servers() -> None:
     assert patched["mcpServers"]["LightNow"]["args"] == [
         "--config",
         str(proxy_config),
-        "--transport",
-        "stdio",
     ]
     assert "secret" not in patched_text
     assert proxy_payload["local_proxy"]["client_name"] == "antigravity"
@@ -1924,8 +1950,6 @@ def test_sync_local_proxy_replaces_existing_gemini_cli_mcp_servers() -> None:
     assert patched["mcpServers"]["LightNow"]["args"] == [
         "--config",
         str(proxy_config),
-        "--transport",
-        "stdio",
     ]
     assert "secret" not in patched_text
     assert proxy_payload["local_proxy"]["client_name"] == "gemini-cli"
@@ -1984,8 +2008,6 @@ def test_sync_local_proxy_replaces_existing_cursor_mcp_servers() -> None:
     assert patched["mcpServers"]["LightNow"]["args"] == [
         "--config",
         str(proxy_config),
-        "--transport",
-        "stdio",
     ]
     assert "secret" not in patched_text
     assert proxy_payload["local_proxy"]["client_name"] == "cursor"
@@ -2049,8 +2071,6 @@ def test_sync_local_proxy_replaces_existing_vscode_mcp_servers() -> None:
     assert patched["servers"]["LightNow"]["args"] == [
         "--config",
         str(proxy_config),
-        "--transport",
-        "stdio",
     ]
     assert "mcpServers" not in patched
     assert "secret" not in patched_text
@@ -2287,7 +2307,6 @@ def test_sync_from_settings_uses_direct_export_for_unmanaged_client() -> None:
 def test_build_local_proxy_config_can_pin_tenant_context() -> None:
     """Local Proxy config can carry the effective tenant selected during sync."""
     generated = build_local_proxy_config(
-        local_proxy_url="http://127.0.0.1:8080/mcp",
         profile="engineering",
         registry_api_url="https://registry-api.lightnow.local/v0.1",
         tenant="tenant-uuid",
@@ -2318,7 +2337,6 @@ def test_build_local_proxy_config_can_pin_tenant_context() -> None:
 
 def test_build_local_proxy_config_binds_named_session_without_tokens() -> None:
     generated = build_local_proxy_config(
-        local_proxy_url="http://127.0.0.1:8080/mcp",
         profile="engineering",
         client="codex",
         connection_alias="lightnow-acme",
@@ -2347,11 +2365,9 @@ def test_build_local_proxy_config_binds_named_session_without_tokens() -> None:
     assert "refresh_token" not in generated
 
 
-def test_build_local_proxy_config_marks_http_client_transport() -> None:
-    """HTTP Local Proxy sync records Streamable HTTP client transport."""
+def test_build_local_proxy_config_marks_stdio_client_transport() -> None:
+    """Local Proxy sync always records its fixed stdio client transport."""
     generated = build_local_proxy_config(
-        local_proxy_url="http://127.0.0.1:9191/mcp",
-        local_proxy_transport="http",
         profile="default",
         registry_api_url="https://registry-api.lightnow.local/v0.1",
         tenant=None,
@@ -2359,13 +2375,12 @@ def test_build_local_proxy_config_marks_http_client_transport() -> None:
 
     payload = yaml.safe_load(generated)
 
-    assert payload["local_proxy"]["client_transport"] == "streamable-http"
+    assert payload["local_proxy"]["client_transport"] == "stdio"
 
 
 def test_build_local_proxy_config_can_include_registry_ca_file() -> None:
     """Local Proxy config can scope a custom CA to LightNow Registry/Auth."""
     generated = build_local_proxy_config(
-        local_proxy_url="http://127.0.0.1:8080/mcp",
         profile="default",
         registry_api_url="https://registry-api.lightnow.local/v0.1",
         tenant=None,
@@ -2411,7 +2426,6 @@ def test_build_local_proxy_config_auto_includes_local_lightnow_ca(monkeypatch) -
         monkeypatch.setenv("LIGHTNOW_REGISTRY_CA_FILE", str(ca_file))
 
         generated = build_local_proxy_config(
-            local_proxy_url="http://127.0.0.1:8080/mcp",
             profile="default",
             registry_api_url="https://registry-api.lightnow.local/v0.1",
             tenant=None,
@@ -2806,7 +2820,6 @@ def test_local_proxy_sync_preserves_runtime_secret_provider_mappings(tmp_path) -
     preserved = read_local_runtime_secrets(config_path)
     rendered = yaml.safe_load(
         build_local_proxy_config(
-            local_proxy_url="http://127.0.0.1:8765/mcp",
             profile="default",
             registry_api_url="https://registry-api.lightnow.ai",
             tenant=None,
@@ -3698,8 +3711,6 @@ def test_config_status_reports_missing_proxy_config_and_binary() -> None:
                             "args": [
                                 "--config",
                                 str(proxy_config),
-                                "--transport",
-                                "stdio",
                             ],
                         }
                     }
@@ -3750,8 +3761,6 @@ def test_config_status_flags_legacy_mcp_proxy_command() -> None:
                             "args": [
                                 "--config",
                                 str(proxy_config),
-                                "--transport",
-                                "stdio",
                             ],
                         }
                     }
@@ -3801,8 +3810,6 @@ def test_config_status_accepts_absolute_proxy_command_without_path() -> None:
                             "args": [
                                 "--config",
                                 str(proxy_config),
-                                "--transport",
-                                "stdio",
                             ],
                         }
                     }
@@ -3852,8 +3859,6 @@ def test_config_status_reports_missing_absolute_proxy_command() -> None:
                             "args": [
                                 "--config",
                                 str(proxy_config),
-                                "--transport",
-                                "stdio",
                             ],
                         }
                     }
@@ -3913,8 +3918,6 @@ def test_config_status_reports_local_proxy_policy_from_proxy_config() -> None:
                             "args": [
                                 "--config",
                                 str(proxy_config),
-                                "--transport",
-                                "stdio",
                             ],
                         },
                         "github": {"command": "docker"},
