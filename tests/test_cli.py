@@ -17,6 +17,7 @@ from lightnow_cli.config import (
     LOCAL_ADMIN_API_URL,
     LOCAL_ISSUER,
     LOCAL_REGISTRY_API_URL,
+    ConfigManager,
 )
 from lightnow_cli.main import app
 from lightnow_cli.target import ConnectionTarget
@@ -333,6 +334,47 @@ def test_favorites_command_passes_tenant_context(runner):
     assert result.exit_code == 0
     assert fake_client.list_servers.call_args.kwargs["favorites"] == "tenant"
     assert fake_client.list_servers.call_args.kwargs["tenant"] == "acme"
+
+
+@pytest.mark.parametrize("tenant_id", [None, "active-organization"])
+def test_favorites_default_uses_selected_context(runner, tmp_path, tenant_id):
+    """The default list must follow actual persisted personal/organization context."""
+    manager = ConfigManager()
+    manager.config_dir = tmp_path / ".lightnow"
+    manager.config_file = manager.config_dir / "config.json"
+    if tenant_id is None:
+        manager.set_personal_context()
+    else:
+        manager.set_tenant_context(tenant_id, "Selected organization")
+    fake_client = MagicMock()
+    fake_client.list_servers = AsyncMock(return_value={"servers": []})
+    with (
+        patch("lightnow_cli.commands.query.config_manager", manager),
+        patch("lightnow_cli.commands.query.get_client", return_value=fake_client),
+    ):
+        result = runner.invoke(app, ["favorites"])
+    assert result.exit_code == 0
+    assert fake_client.list_servers.call_args.kwargs["favorites"] == "effective"
+    assert fake_client.list_servers.call_args.kwargs["tenant"] == tenant_id
+
+
+@pytest.mark.parametrize("scope", ["user", "tenant", "system", "effective", "true"])
+def test_favorites_explicit_scope_is_not_silently_replaced(runner, tmp_path, scope):
+    """Explicit scope flags do not silently change the active organization."""
+    manager = ConfigManager()
+    manager.config_dir = tmp_path / ".lightnow"
+    manager.config_file = manager.config_dir / "config.json"
+    manager.set_tenant_context("active-organization", "Selected organization")
+    fake_client = MagicMock()
+    fake_client.list_servers = AsyncMock(return_value={"servers": []})
+    with (
+        patch("lightnow_cli.commands.query.config_manager", manager),
+        patch("lightnow_cli.commands.query.get_client", return_value=fake_client),
+    ):
+        result = runner.invoke(app, ["favorites", "--scope", scope])
+    assert result.exit_code == 0
+    assert fake_client.list_servers.call_args.kwargs["favorites"] == scope
+    assert fake_client.list_servers.call_args.kwargs["tenant"] == "active-organization"
 
 
 def test_info_command_passes_tenant_context(runner):
@@ -847,12 +889,12 @@ def test_favorites_command_empty(mock_list_servers, runner):
 
     assert result.exit_code == 0
     assert "No favorite servers found" in result.stdout
-    assert mock_list_servers.call_args.kwargs["favorites"] == "user"
+    assert mock_list_servers.call_args.kwargs["favorites"] == "effective"
 
 
 @patch("lightnow_cli.client.MCPRegistryClient.list_servers")
 def test_favorites_command_allows_effective_scope(mock_list_servers, runner):
-    """Effective favorites remain available as an explicit combined view."""
+    """Explicit effective scope remains bound to the selected context."""
     mock_list_servers.return_value = {"servers": [], "metadata": {"count": 0}}
 
     result = runner.invoke(app, ["favorites", "--scope", "effective"])

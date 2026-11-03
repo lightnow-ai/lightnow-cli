@@ -74,7 +74,7 @@ def favorite_servers(
             "--scope",
             help="Favorite scope: effective, user, tenant, system, or true.",
         ),
-    ] = "user",
+    ] = "effective",
     sort: Annotated[
         Optional[str],
         typer.Option("--sort", help="Sort order supported by the Registry API."),

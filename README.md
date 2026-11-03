@@ -128,7 +128,7 @@ Show details for one server:
 lightnow info io.github.SonarSource/sonarqube-mcp-server
 ```
 
-Show your favorites:
+Show favorites for the active personal or organization context:
 
 ```bash
 lightnow favorites
