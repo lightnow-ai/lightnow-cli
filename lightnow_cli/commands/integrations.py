@@ -118,14 +118,12 @@ CLIENT_INTERNAL_MCP_SERVERS = {
 }
 VSCODE_VIRTUAL_TOOLS_THRESHOLD_SETTING = "github.copilot.chat.virtualTools.threshold"
 VSCODE_VIRTUAL_TOOLS_THRESHOLD = 128
-LOCAL_PROXY_STDIO_SUPPORT_MESSAGE = (
+LOCAL_PROXY_SUPPORT_MESSAGE = (
     "Local Proxy Mode stdio currently supports Codex TOML, "
     "Antigravity JSON, Claude Code JSON, Claude Desktop JSON, "
     "Cursor JSON, Gemini CLI JSON, and VS Code JSON only."
 )
-LOCAL_PROXY_HTTP_SUPPORT_MESSAGE = (
-    "Local Proxy Mode HTTP currently supports Codex TOML only."
-)
+REMOTE_PROXY_SUPPORT_MESSAGE = "Remote Proxy Mode currently supports Codex TOML only."
 MCP_PROXY_INSTALL_HINT = (
     "Install the LightNow Proxy and make sure `lightnow-proxy` resolves on PATH, "
     "then re-run the sync so the client config can pin its full path."
@@ -232,21 +230,40 @@ def discover_local_lightnow_ca_file(registry_api_url: str) -> Optional[Path]:
     return None
 
 
-def local_proxy_support_error(
-    client: str, export_format: str, local_proxy_transport: str
-) -> Optional[str]:
-    """Return why a client/format/transport combination lacks Local Proxy support."""
-    if local_proxy_transport == "stdio":
-        if client in LOCAL_PROXY_JSON_CLIENTS and export_format == "json":
-            return None
-        if client == "codex" and export_format == "toml":
-            return None
-        return LOCAL_PROXY_STDIO_SUPPORT_MESSAGE
-    if local_proxy_transport == "http":
-        if client == "codex" and export_format == "toml":
-            return None
-        return LOCAL_PROXY_HTTP_SUPPORT_MESSAGE
-    return "Local Proxy transport must be stdio or http."
+def local_proxy_support_error(client: str, export_format: str) -> Optional[str]:
+    """Return why a client/format combination lacks Local Proxy support."""
+    if client in LOCAL_PROXY_JSON_CLIENTS and export_format == "json":
+        return None
+    if client == "codex" and export_format == "toml":
+        return None
+    return LOCAL_PROXY_SUPPORT_MESSAGE
+
+
+def remote_proxy_support_error(client: str, export_format: str) -> Optional[str]:
+    """Return why a client/format combination lacks Remote Proxy support."""
+    if client == "codex" and export_format == "toml":
+        return None
+    return REMOTE_PROXY_SUPPORT_MESSAGE
+
+
+def validate_remote_proxy_url(value: str) -> str:
+    """Return a normalized HTTPS MCP endpoint for a remote proxy."""
+    parsed = urlparse(value)
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("Remote Proxy URL must be a valid HTTPS URL.") from exc
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+    ):
+        raise ValueError("Remote Proxy URL must be a valid HTTPS URL.")
+    if port is not None and not 1 <= port <= 65535:
+        raise ValueError("Remote Proxy URL must be a valid HTTPS URL.")
+    return value
 
 
 def lightnow_proxy_available() -> bool:
@@ -395,6 +412,13 @@ def sync(
             help="Write one LightNow Local Proxy entry instead of per-server config.",
         ),
     ] = False,
+    remote_proxy_url: Annotated[
+        Optional[str],
+        typer.Option(
+            "--remote-proxy-url",
+            help="HTTPS MCP endpoint for a remotely hosted LightNow Proxy.",
+        ),
+    ] = None,
     connection: Annotated[
         str,
         typer.Option(
@@ -409,20 +433,6 @@ def sync(
             help="Use LightNow Config policy to choose direct config or Local Proxy mode.",
         ),
     ] = False,
-    local_proxy_url: Annotated[
-        str,
-        typer.Option(
-            "--local-proxy-url",
-            help="Local Proxy MCP endpoint used for HTTP mode and proxy config.",
-        ),
-    ] = "http://127.0.0.1:8080/mcp",
-    local_proxy_transport: Annotated[
-        str,
-        typer.Option(
-            "--local-proxy-transport",
-            help="Client-facing Local Proxy transport: stdio or http.",
-        ),
-    ] = "stdio",
     local_proxy_config_path: Annotated[
         Optional[Path],
         typer.Option(
@@ -443,17 +453,17 @@ def sync(
         raise_bad_argument("Unsupported client", f"Use one of: {', '.join(CLIENTS)}")
     if secret_mode not in SECRET_MODES:
         raise_bad_argument("Unsupported secret mode", "Use placeholder or plaintext.")
-    if runner and local_proxy:
-        raise_bad_argument(
-            "Unsupported sync mode", "Use either --runner or --local-proxy, not both."
-        )
-    if from_settings and (runner or local_proxy):
+    selected_modes = sum((runner, local_proxy, remote_proxy_url is not None))
+    if selected_modes > 1:
         raise_bad_argument(
             "Unsupported sync mode",
-            "Use --from-settings without --runner or --local-proxy.",
+            "Use only one of --runner, --local-proxy or --remote-proxy-url.",
         )
-    if local_proxy_transport not in {"stdio", "http"}:
-        raise_bad_argument("Unsupported Local Proxy transport", "Use stdio or http.")
+    if from_settings and selected_modes:
+        raise_bad_argument(
+            "Unsupported sync mode",
+            "Use --from-settings without another sync mode.",
+        )
     try:
         connection = validate_connection_alias(connection)
     except ValueError as exc:
@@ -463,11 +473,17 @@ def sync(
     export_format = format_ or default_format
     target = (config_path or default_path).expanduser()
     if local_proxy:
-        support_error = local_proxy_support_error(
-            client, export_format, local_proxy_transport
-        )
+        support_error = local_proxy_support_error(client, export_format)
         if support_error:
             raise_bad_argument("Unsupported Local Proxy client", support_error)
+    if remote_proxy_url is not None:
+        support_error = remote_proxy_support_error(client, export_format)
+        if support_error:
+            raise_bad_argument("Unsupported Remote Proxy client", support_error)
+        try:
+            remote_proxy_url = validate_remote_proxy_url(remote_proxy_url)
+        except ValueError as exc:
+            raise_bad_argument("Invalid Remote Proxy URL", str(exc))
     try:
         bearer_token = require_access_token()
     except AccessTokenExpired:
@@ -493,7 +509,8 @@ def sync(
     settings_local_proxy_summary: dict[str, Any] = {}
     removed_direct_servers: list[str] = []
     empty_profile_existing_aliases: list[str] = []
-    remove_unmanaged_client_servers = local_proxy
+    proxy_connection = local_proxy or remote_proxy_url is not None
+    remove_unmanaged_client_servers = proxy_connection
     policy_managed_sync = False
     session_binding: dict[str, str] | None = None
 
@@ -526,6 +543,7 @@ def sync(
             elif isinstance(settings_payload.get("defaultProfile"), str):
                 profile = str(settings_payload["defaultProfile"])
 
+        proxy_connection = local_proxy or remote_proxy_url is not None
         if local_proxy:
             active_config = config_manager.load_config()
             if active_config.access_token == bearer_token:
@@ -547,14 +565,10 @@ def sync(
             generated = build_local_proxy_export(
                 client=client,
                 export_format=export_format,
-                local_proxy_url=local_proxy_url,
-                local_proxy_transport=local_proxy_transport,
                 local_proxy_config_path=proxy_target,
                 connection_alias=connection,
             )
             proxy_config = build_local_proxy_config(
-                local_proxy_url=local_proxy_url,
-                local_proxy_transport=local_proxy_transport,
                 profile=profile,
                 client=client,
                 connection_alias=connection,
@@ -569,6 +583,13 @@ def sync(
                 device_installation_id=device_installation_id,
                 client_instance_id=client_instance_id,
                 runtime_secrets=read_local_runtime_secrets(proxy_target),
+            )
+        elif remote_proxy_url is not None:
+            generated = build_remote_proxy_export(
+                client=client,
+                export_format=export_format,
+                remote_proxy_url=remote_proxy_url,
+                connection_alias=connection,
             )
         elif runner:
             profile_payload = fetch_profile_servers(
@@ -601,30 +622,30 @@ def sync(
             if export_format == "json"
             else {"aliases": [], "input_ids": []}
         )
-        if local_proxy and remove_unmanaged_client_servers:
+        if proxy_connection and remove_unmanaged_client_servers:
             removed_direct_servers = direct_server_aliases(existing, export_format)
-        if local_proxy and client == "codex" and export_format == "toml":
+        if proxy_connection and client == "codex" and export_format == "toml":
             existing = remove_codex_mcp_server_alias(existing, connection)
         if (
-            local_proxy
+            proxy_connection
             and remove_unmanaged_client_servers
             and client == "codex"
             and export_format == "toml"
         ):
             existing = prepare_codex_local_proxy_config(existing)
         if (
-            local_proxy
+            proxy_connection
             and remove_unmanaged_client_servers
             and client in LOCAL_PROXY_JSON_CLIENTS
             and export_format == "json"
         ):
             existing = prepare_json_local_proxy_config(existing)
-        if local_proxy and export_format == "toml":
+        if proxy_connection and export_format == "toml":
             generated = merge_local_proxy_toml_connection(
                 existing, generated, connection
             )
         patch_aliases = previous_managed["aliases"]
-        if local_proxy and export_format == "json":
+        if proxy_connection and export_format == "json":
             patch_aliases = ["LightNow" if connection == "lightnow" else connection]
         patched = patch_config(
             existing,
@@ -634,7 +655,7 @@ def sync(
             previous_managed["input_ids"],
         )
         if (
-            not local_proxy
+            not proxy_connection
             and not runner
             and export_format == "json"
             and json_server_maps_are_empty(generated)
@@ -698,7 +719,7 @@ def sync(
         and not dry_run
         and not yes
         and not runner
-        and not local_proxy
+        and not proxy_connection
     ):
         confirmed = typer.confirm(
             "This writes secret values into the client config on this machine. Continue?",
@@ -708,16 +729,22 @@ def sync(
             console.print("[yellow]Canceled.[/yellow]")
             raise typer.Exit(1)
 
-    if local_proxy and removed_direct_servers and not yes and not policy_managed_sync:
+    if (
+        proxy_connection
+        and removed_direct_servers
+        and not yes
+        and not policy_managed_sync
+    ):
+        proxy_mode_label = "Local Proxy" if local_proxy else "Remote Proxy"
         console.print(
-            f"[yellow]Local Proxy Mode removes direct MCP server entries from {target}:[/yellow] "
+            f"[yellow]{proxy_mode_label} Mode removes direct MCP server entries from {target}:[/yellow] "
             f"{', '.join(removed_direct_servers)}"
         )
         console.print(
             f"A backup of the current file is kept at {backup_path_for(target)}."
         )
         confirmed = typer.confirm(
-            "Replace these entries with one LightNow Local Proxy entry?",
+            f"Replace these entries with one LightNow {proxy_mode_label} entry?",
             default=True,
         )
         if not confirmed:
@@ -738,7 +765,7 @@ def sync(
     secure_write_text(target, patched, executable=export_format == "shell")
     if export_format == "json":
         latest_managed = extract_json_managed(generated)
-        if local_proxy:
+        if proxy_connection:
             latest_managed = {
                 "aliases": sorted(
                     set(previous_managed["aliases"] + latest_managed["aliases"])
@@ -774,11 +801,7 @@ def sync(
                     client_instance_id=client_instance_id,
                     client=client,
                     profile=profile,
-                    transport=(
-                        "streamable-http"
-                        if local_proxy_transport == "http"
-                        else "stdio"
-                    ),
+                    transport="stdio",
                 )
             except (AccessTokenExpired, AuthError, ValueError) as exc:
                 console.print(
@@ -792,22 +815,23 @@ def sync(
                 raise typer.Exit(1) from exc
 
     console.print(f"[green]Synced {client} profile {profile} to {target}[/green]")
-    if local_proxy:
+    if proxy_connection:
         if removed_direct_servers:
             console.print(
                 "[yellow]Removed direct MCP server entries:[/yellow] "
                 f"{', '.join(removed_direct_servers)} "
                 f"(backup: {backup_path_for(target)})"
             )
-        status = analyze_client_config_content(
-            client=client,
-            export_format=export_format,
-            content=patched,
-            expected_proxy_config_path=proxy_target,
-        )
-        augment_local_proxy_posture(status)
-        print_config_status(status, target)
-        if from_settings:
+        if local_proxy:
+            status = analyze_client_config_content(
+                client=client,
+                export_format=export_format,
+                content=patched,
+                expected_proxy_config_path=proxy_target,
+            )
+            augment_local_proxy_posture(status)
+            print_config_status(status, target)
+        if local_proxy and from_settings:
             if settings_local_proxy_summary.get("policyMode") == "enforce":
                 console.print(
                     "[cyan]LightNow policy is enforce: managed clients should keep only the Local Proxy MCP entry.[/cyan]"
@@ -953,47 +977,46 @@ def build_local_proxy_export(
     *,
     client: str,
     export_format: str,
-    local_proxy_url: str,
-    local_proxy_transport: str = "stdio",
     local_proxy_config_path: Optional[Path] = None,
     connection_alias: str = "lightnow",
 ) -> str:
     """Build one client config entry that points at the LightNow Local Proxy."""
-    support_error = local_proxy_support_error(
-        client, export_format, local_proxy_transport
-    )
+    support_error = local_proxy_support_error(client, export_format)
     if support_error:
         raise ValueError(support_error)
-    if local_proxy_transport == "stdio":
-        if client in LOCAL_PROXY_MCP_SERVERS_JSON_CLIENTS and export_format == "json":
-            return render_local_proxy_mcp_servers_json(
-                local_proxy_config_path
-                or default_local_proxy_config_path(client, connection_alias),
-                connection_alias,
-            )
-        if client in LOCAL_PROXY_VSCODE_JSON_CLIENTS and export_format == "json":
-            return render_local_proxy_vscode_json(
-                local_proxy_config_path
-                or default_local_proxy_config_path(client, connection_alias),
-                connection_alias,
-            )
-        return render_local_proxy_codex_stdio_toml(
+    if client in LOCAL_PROXY_MCP_SERVERS_JSON_CLIENTS and export_format == "json":
+        return render_local_proxy_mcp_servers_json(
             local_proxy_config_path
             or default_local_proxy_config_path(client, connection_alias),
             connection_alias,
         )
-    parsed = urlparse(local_proxy_url)
-    try:
-        port = parsed.port
-    except ValueError as exc:
-        raise ValueError("Local Proxy URL must point to localhost.") from exc
-    if (
-        parsed.scheme != "http"
-        or parsed.hostname not in {"127.0.0.1", "localhost"}
-        or port is None
-    ):
-        raise ValueError("Local Proxy URL must point to localhost.")
-    return render_local_proxy_codex_toml(local_proxy_url, connection_alias)
+    if client in LOCAL_PROXY_VSCODE_JSON_CLIENTS and export_format == "json":
+        return render_local_proxy_vscode_json(
+            local_proxy_config_path
+            or default_local_proxy_config_path(client, connection_alias),
+            connection_alias,
+        )
+    return render_local_proxy_codex_stdio_toml(
+        local_proxy_config_path
+        or default_local_proxy_config_path(client, connection_alias),
+        connection_alias,
+    )
+
+
+def build_remote_proxy_export(
+    *,
+    client: str,
+    export_format: str,
+    remote_proxy_url: str,
+    connection_alias: str = "lightnow",
+) -> str:
+    """Build one client config entry for a remotely hosted LightNow Proxy."""
+    support_error = remote_proxy_support_error(client, export_format)
+    if support_error:
+        raise ValueError(support_error)
+    return render_remote_proxy_codex_toml(
+        validate_remote_proxy_url(remote_proxy_url), connection_alias
+    )
 
 
 def local_proxy_command() -> str:
@@ -1011,8 +1034,6 @@ def warm_local_proxy_tools_cache(local_proxy_config_path: Path) -> None:
                 command,
                 "--config",
                 str(local_proxy_config_path.expanduser()),
-                "--transport",
-                "stdio",
                 "--warm-tools-cache",
             ],
             capture_output=True,
@@ -1066,11 +1087,21 @@ def render_local_proxy_codex_stdio_toml(
             [
                 "--config",
                 str(local_proxy_config_path.expanduser()),
-                "--transport",
-                "stdio",
             ]
         )
         + "\n"
+        'default_tools_approval_mode = "approve"\n'
+    )
+
+
+def render_remote_proxy_codex_toml(
+    remote_proxy_url: str, connection_alias: str = "lightnow"
+) -> str:
+    """Render Codex TOML for a remotely hosted LightNow MCP proxy."""
+    return (
+        "# Generated by LightNow. Codex connects to a remote LightNow Proxy.\n"
+        f"[mcp_servers.{validate_connection_alias(connection_alias)}]\n"
+        f"url = {json.dumps(validate_remote_proxy_url(remote_proxy_url))}\n"
         'default_tools_approval_mode = "approve"\n'
     )
 
@@ -1090,8 +1121,6 @@ def render_local_proxy_mcp_servers_json(
                 "args": [
                     "--config",
                     str(local_proxy_config_path.expanduser()),
-                    "--transport",
-                    "stdio",
                 ],
             }
         }
@@ -1115,8 +1144,6 @@ def render_local_proxy_vscode_json(
                 "args": [
                     "--config",
                     str(local_proxy_config_path.expanduser()),
-                    "--transport",
-                    "stdio",
                 ],
             }
         }
@@ -1124,23 +1151,9 @@ def render_local_proxy_vscode_json(
     return json.dumps(payload, indent=2) + "\n"
 
 
-def render_local_proxy_codex_toml(
-    local_proxy_url: str, connection_alias: str = "lightnow"
-) -> str:
-    """Render Codex TOML for one local LightNow MCP server."""
-    return (
-        "# Generated by LightNow. The MCP client talks only to the local LightNow proxy.\n"
-        f"[mcp_servers.{validate_connection_alias(connection_alias)}]\n"
-        f"url = {json.dumps(local_proxy_url)}\n"
-        'default_tools_approval_mode = "approve"\n'
-    )
-
-
 def build_local_proxy_config(
     *,
-    local_proxy_url: str,
     profile: str,
-    local_proxy_transport: str = "stdio",
     client: str = "codex",
     connection_alias: str = "lightnow",
     connection_id: Optional[str] = None,
@@ -1154,14 +1167,6 @@ def build_local_proxy_config(
     runtime_secrets: Optional[dict[str, Any]] = None,
 ) -> str:
     """Render the local LightNow Proxy config for LightNow-managed profile sync."""
-    parsed = urlparse(local_proxy_url)
-    try:
-        port = parsed.port
-    except ValueError as exc:
-        raise ValueError("Local Proxy URL must point to localhost.") from exc
-    if parsed.scheme != "http" or parsed.hostname is None or port is None:
-        raise ValueError("Local Proxy URL must point to localhost.")
-
     registry_api: dict[str, Any] = {
         "enabled": True,
         "base_url": registry_api_url,
@@ -1196,14 +1201,11 @@ def build_local_proxy_config(
         "scope_type": "tenant" if tenant else "personal",
         "scope_id": tenant or (session_binding or {}).get("subject"),
         "account_label": (session_binding or {}).get("account_label"),
-        "path": parsed.path or "/mcp",
         "sync_from_lightnow": True,
         "client_name": client,
         "client_version": None,
         "runner_name": "lightnow-local-proxy",
-        "client_transport": (
-            "streamable-http" if local_proxy_transport == "http" else "stdio"
-        ),
+        "client_transport": "stdio",
         "device_installation_id": device_installation_id,
         "client_instance_id": client_instance_id,
         "device_hostname": socket.gethostname(),
@@ -1233,11 +1235,6 @@ def build_local_proxy_config(
         )
 
     payload = {
-        "server": {
-            "host": parsed.hostname,
-            "port": port,
-            "public_url": f"{parsed.scheme}://{parsed.hostname}:{port}",
-        },
         "local_proxy": local_proxy_config,
         "auth": {
             "enabled": False,
@@ -1812,7 +1809,7 @@ def analyze_client_config_content(
         is_lightnow_proxy = (
             command_looks_like(command, LOCAL_PROXY_EXECUTABLE)
             or command_looks_like(command, LEGACY_LOCAL_PROXY_EXECUTABLE)
-            or (is_lightnow_connection_alias(alias) and is_local_proxy_url(url))
+            or (is_lightnow_connection_alias(alias) and is_remote_proxy_url(url))
         )
         is_lightnow_runner = command_looks_like(command, "lightnow") and "run" in [
             str(arg) for arg in args
@@ -2095,12 +2092,13 @@ def command_looks_like(command: str, executable: str) -> bool:
     return normalized.endswith(f"/{executable}")
 
 
-def is_local_proxy_url(value: str) -> bool:
-    """Return whether a URL points to an explicitly local proxy endpoint."""
-    if not value:
+def is_remote_proxy_url(value: str) -> bool:
+    """Return whether a URL is a valid remote LightNow Proxy endpoint."""
+    try:
+        validate_remote_proxy_url(value)
+    except ValueError:
         return False
-    parsed = urlparse(value)
-    return parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost"}
+    return True
 
 
 def warning_hint(code: str, client: str) -> Optional[str]:
@@ -2300,7 +2298,7 @@ def prepare_codex_local_proxy_config(existing: str) -> str:
         )
         or (
             is_lightnow_connection_alias(alias)
-            and is_local_proxy_url(str(entry.get("url") or ""))
+            and is_remote_proxy_url(str(entry.get("url") or ""))
         )
     }
     return strip_codex_mcp_server_tables(existing, preserved)
@@ -2340,7 +2338,7 @@ def prepare_json_local_proxy_config(existing: str) -> str:
                 )
                 or (
                     is_lightnow_connection_alias(alias)
-                    and is_local_proxy_url(str(entry.get("url") or ""))
+                    and is_remote_proxy_url(str(entry.get("url") or ""))
                 )
             )
         }
