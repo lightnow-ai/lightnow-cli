@@ -4,6 +4,15 @@ All notable changes to the LightNow CLI are documented here.
 
 This project follows semantic versioning.
 
+## [1.6.1](https://github.com/lightnow-ai/lightnow-cli/compare/v1.6.0...v1.6.1) (2026-11-09)
+
+
+### Bug Fixes
+
+* **cli:** use active context for default favorites ([5399173](https://github.com/lightnow-ai/lightnow-cli/commit/539917321a8fbafedb05394841b5fadd0b5319e0))
+* **cli:** use active context for default favorites ([1ccba54](https://github.com/lightnow-ai/lightnow-cli/commit/1ccba543e34b236d449bdedeb644029c54f49f03))
+* **cli:** use active context for default favorites ([#45](https://github.com/lightnow-ai/lightnow-cli/issues/45)) ([5399173](https://github.com/lightnow-ai/lightnow-cli/commit/539917321a8fbafedb05394841b5fadd0b5319e0))
+
 ## [1.6.0](https://github.com/lightnow-ai/lightnow-cli/compare/v1.5.0...v1.6.0) (2026-10-09)
 
 
