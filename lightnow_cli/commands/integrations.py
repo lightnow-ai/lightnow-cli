@@ -121,7 +121,7 @@ VSCODE_VIRTUAL_TOOLS_THRESHOLD = 128
 LOCAL_PROXY_STDIO_SUPPORT_MESSAGE = (
     "Local Proxy Mode stdio currently supports Codex TOML, "
     "Antigravity JSON, Claude Code JSON, Claude Desktop JSON, "
-    "Cursor JSON, Gemini CLI JSON, and VS Code JSON only."
+    "Cursor JSON, Gemini CLI JSON, VS Code JSON, and LibreChat YAML only."
 )
 LOCAL_PROXY_HTTP_SUPPORT_MESSAGE = (
     "Local Proxy Mode HTTP currently supports Codex TOML only."
@@ -237,6 +237,8 @@ def local_proxy_support_error(
 ) -> Optional[str]:
     """Return why a client/format/transport combination lacks Local Proxy support."""
     if local_proxy_transport == "stdio":
+        if client == "librechat" and export_format == "yaml":
+            return None
         if client in LOCAL_PROXY_JSON_CLIENTS and export_format == "json":
             return None
         if client == "codex" and export_format == "toml":
@@ -271,12 +273,29 @@ def backup_path_for(path: Path) -> Path:
 
 def direct_server_aliases(content: str, export_format: str) -> list[str]:
     """Return non-LightNow MCP server aliases found in a client config."""
-    if export_format not in {"json", "toml"}:
+    if export_format not in {"json", "toml", "yaml"}:
         return []
     try:
         entries = extract_mcp_entries(content, export_format)
     except ValueError:
         return []
+    if export_format == "yaml":
+        return sorted(
+            alias
+            for alias, entry in entries.items()
+            if not (
+                command_looks_like(
+                    str(entry.get("command") or ""), LOCAL_PROXY_EXECUTABLE
+                )
+                or command_looks_like(
+                    str(entry.get("command") or ""), LEGACY_LOCAL_PROXY_EXECUTABLE
+                )
+                or (
+                    is_lightnow_connection_alias(alias)
+                    and is_local_proxy_url(str(entry.get("url") or ""))
+                )
+            )
+        )
     return sorted(alias for alias in entries if alias not in LIGHTNOW_PROXY_ALIASES)
 
 
@@ -626,13 +645,18 @@ def sync(
         patch_aliases = previous_managed["aliases"]
         if local_proxy and export_format == "json":
             patch_aliases = ["LightNow" if connection == "lightnow" else connection]
-        patched = patch_config(
-            existing,
-            generated,
-            export_format,
-            patch_aliases,
-            previous_managed["input_ids"],
-        )
+        if local_proxy and client == "librechat" and export_format == "yaml":
+            patched = patch_local_proxy_yaml_config(
+                existing, generated, remove_unmanaged_client_servers
+            )
+        else:
+            patched = patch_config(
+                existing,
+                generated,
+                export_format,
+                patch_aliases,
+                previous_managed["input_ids"],
+            )
         if (
             not local_proxy
             and not runner
@@ -965,6 +989,12 @@ def build_local_proxy_export(
     if support_error:
         raise ValueError(support_error)
     if local_proxy_transport == "stdio":
+        if client == "librechat" and export_format == "yaml":
+            return render_local_proxy_librechat_yaml(
+                local_proxy_config_path
+                or default_local_proxy_config_path(client, connection_alias),
+                connection_alias,
+            )
         if client in LOCAL_PROXY_MCP_SERVERS_JSON_CLIENTS and export_format == "json":
             return render_local_proxy_mcp_servers_json(
                 local_proxy_config_path
@@ -1097,6 +1127,18 @@ def render_local_proxy_mcp_servers_json(
         }
     }
     return json.dumps(payload, indent=2) + "\n"
+
+
+def render_local_proxy_librechat_yaml(
+    local_proxy_config_path: Path, connection_alias: str = "lightnow"
+) -> str:
+    """Render an operator-owned LibreChat stdio entry on its backend host."""
+    payload = json.loads(
+        render_local_proxy_mcp_servers_json(local_proxy_config_path, connection_alias)
+    )
+    for entry in payload["mcpServers"].values():
+        entry["type"] = "stdio"
+    return yaml.safe_dump(payload, sort_keys=False, allow_unicode=True)
 
 
 def render_local_proxy_vscode_json(
@@ -2084,6 +2126,11 @@ def extract_mcp_entries(content: str, export_format: str) -> dict[str, dict[str,
                 if isinstance(entry, dict):
                     entries[str(alias)] = entry
         return entries
+    if export_format == "yaml":
+        payload = load_yaml_client_config(content)
+        return {
+            str(alias): entry for alias, entry in payload.get("mcpServers", {}).items()
+        }
     raise ValueError(f"unsupported_format:{export_format}")
 
 
@@ -2106,7 +2153,7 @@ def is_local_proxy_url(value: str) -> bool:
 def warning_hint(code: str, client: str) -> Optional[str]:
     """Return a short recovery hint for a posture warning code."""
     sync_command = f"lightnow sync --client {client} --local-proxy"
-    if code.startswith("invalid_json") or code.startswith("invalid_toml"):
+    if code.startswith(("invalid_json", "invalid_toml", "invalid_yaml")):
         return (
             "the config file could not be parsed; fix it or restore the "
             ".lightnow.bak backup, then re-run the sync."
@@ -2437,6 +2484,60 @@ def merge_local_proxy_toml_connection(
     preserve = set(entries) - {connection_alias}
     kept = strip_codex_mcp_server_tables(managed, preserve).strip()
     return "\n\n".join(part for part in (kept, generated.strip()) if part)
+
+
+class ClientConfigSafeLoader(yaml.SafeLoader):
+    """Reject duplicate YAML keys rather than silently discarding configuration."""
+
+    def construct_mapping(
+        self, node: yaml.nodes.MappingNode, deep: bool = False
+    ) -> dict[Any, Any]:
+        keys = [
+            self.construct_object(key, deep=deep)
+            for key, _ in node.value
+            if key.tag != "tag:yaml.org,2002:merge"
+        ]
+        if len(set(keys)) != len(keys):
+            raise ValueError("invalid_yaml:duplicate_key")
+        return super().construct_mapping(node, deep=deep)
+
+
+def load_yaml_client_config(content: str) -> dict[str, Any]:
+    """Read a LibreChat mapping without exposing source values in parse errors."""
+    try:
+        payload = (
+            yaml.load(content, Loader=ClientConfigSafeLoader) if content.strip() else {}
+        )
+    except (yaml.YAMLError, TypeError) as exc:
+        raise ValueError("invalid_yaml:parse_failed") from exc
+    if payload is None:
+        payload = {}
+    if not isinstance(payload, dict):
+        raise ValueError("invalid_yaml:root_not_object")
+    servers = payload.get("mcpServers", {})
+    if not isinstance(servers, dict) or any(
+        not isinstance(alias, str) or not isinstance(entry, dict)
+        for alias, entry in servers.items()
+    ):
+        raise ValueError("invalid_yaml:mcpServers_not_object")
+    return payload
+
+
+def patch_local_proxy_yaml_config(
+    existing: str, generated: str, remove_unmanaged: bool
+) -> str:
+    """Merge one LibreChat connection while respecting the unmanaged-server policy."""
+    current = load_yaml_client_config(existing)
+    incoming = load_yaml_client_config(generated)
+    entries = current.get("mcpServers", {})
+    if remove_unmanaged:
+        unmanaged = set(direct_server_aliases(existing, "yaml"))
+        entries = {
+            alias: entry for alias, entry in entries.items() if alias not in unmanaged
+        }
+    entries.update(incoming["mcpServers"])
+    current["mcpServers"] = entries
+    return yaml.safe_dump(current, sort_keys=False, allow_unicode=True)
 
 
 def patch_json_config(

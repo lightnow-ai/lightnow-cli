@@ -216,6 +216,20 @@ lightnow sync --client cursor --local-proxy
 lightnow sync --client vscode --local-proxy
 ```
 
+For LibreChat, run the CLI on the LibreChat backend host or inside its container,
+where `lightnow-proxy` is installed:
+
+```bash
+lightnow sync --client librechat --local-proxy --config-path /path/to/librechat.yaml
+lightnow config-status --client librechat --config-path /path/to/librechat.yaml
+```
+
+The generated stdio entry starts the proxy from LibreChat's backend. Its executable,
+private proxy configuration, and LightNow login session must remain accessible
+there. Reload LibreChat after updating its operator configuration. Sync preserves
+other LibreChat settings and backs up the original file; YAML formatting and
+comments are normalized. LibreChat Local Proxy mode supports stdio only.
+
 Let LightNow choose the configured organization policy for a client:
 
 ```bash
@@ -267,8 +281,8 @@ files:
 lightnow sync --client codex --runner
 ```
 
-For daemon-style local testing, `--local-proxy-transport http` writes a
-localhost Streamable HTTP entry instead of a stdio auto-start entry.
+For Codex, `--local-proxy-transport http` writes a localhost Streamable HTTP
+entry instead of a stdio auto-start entry.
 
 Note: Google has moved individual Gemini CLI users to Antigravity. LightNow
 keeps `gemini-cli` support for Enterprise/API-key environments, but
