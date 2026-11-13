@@ -832,7 +832,7 @@ def test_local_proxy_export_rejects_unsupported_clients() -> None:
     except ValueError as exc:
         assert (
             "Codex TOML, Antigravity JSON, Claude Code JSON, Claude Desktop JSON, Cursor JSON, "
-            "Gemini CLI JSON, and VS Code JSON" in str(exc)
+            "Gemini CLI JSON, VS Code JSON, and LibreChat YAML" in str(exc)
         )
     else:
         raise AssertionError("expected ValueError")
@@ -4153,3 +4153,307 @@ def test_sync_local_proxy_reports_removed_servers_and_next_step() -> None:
     assert "github" in result.stdout
     assert "lightnow.bak" in result.stdout
     assert "Next: restart claude-desktop" in result.stdout
+
+
+def test_librechat_local_proxy_export_uses_backend_stdio_paths() -> None:
+    with patch(
+        "lightnow_cli.commands.integrations.local_proxy_command",
+        return_value="lightnow-proxy",
+    ):
+        generated = build_local_proxy_export(
+            client="librechat",
+            export_format="yaml",
+            local_proxy_url="http://127.0.0.1:8080/mcp",
+            local_proxy_config_path=Path("/srv/Libre Chat/private/proxy.yaml"),
+            connection_alias="lightnow-team",
+        )
+    payload = yaml.safe_load(generated)
+    assert payload == {
+        "mcpServers": {
+            "lightnow-team": {
+                "command": "lightnow-proxy",
+                "args": [
+                    "--config",
+                    "/srv/Libre Chat/private/proxy.yaml",
+                    "--transport",
+                    "stdio",
+                ],
+                "type": "stdio",
+            }
+        }
+    }
+    assert "token" not in generated
+    assert "url" not in generated
+
+
+@pytest.mark.parametrize("mode", ["http", "json", "import"])
+def test_librechat_rejects_unsupported_modes_before_auth(mode) -> None:
+    args = (
+        ["import-config", "--client", "librechat"]
+        if mode == "import"
+        else [
+            "sync",
+            "--client",
+            "librechat",
+            "--local-proxy",
+            *(
+                ["--local-proxy-transport", "http"]
+                if mode == "http"
+                else ["--format", "json"]
+            ),
+        ]
+    )
+    with patch("lightnow_cli.commands.integrations.require_access_token") as auth:
+        result = CliRunner().invoke(app, args)
+    assert result.exit_code == 2
+    assert "Unsupported" in result.output
+    auth.assert_not_called()
+
+
+@pytest.mark.parametrize("allow_unmanaged", [False, True])
+def test_librechat_sync_preserves_settings_and_obeys_policy(
+    tmp_path, allow_unmanaged, stub_device_registration
+) -> None:
+    from lightnow_cli.config import Config
+
+    target = tmp_path / "librechat.yaml"
+    proxy = tmp_path / "private-proxy.yaml"
+    original = {
+        "version": "1.2.8",
+        "endpoints": {"custom": [{"name": "Local model"}]},
+        "mcpServers": {
+            "external": {
+                "command": "synthetic-server",
+                "env": {"TOKEN": "synthetic-secret"},
+            }
+        },
+    }
+    target.write_text(yaml.safe_dump(original))
+    binding = {
+        "session_id": "test-session",
+        "path": str(tmp_path / "session.json"),
+        "issuer": "https://auth.example.test/realms/lightnow",
+        "subject": "user-1",
+        "account_label": "Example",
+    }
+    with (
+        patch(
+            "lightnow_cli.commands.integrations.require_access_token",
+            return_value="synthetic-token",
+        ),
+        patch(
+            "lightnow_cli.commands.integrations.config_manager.load_config",
+            return_value=Config(
+                access_token="synthetic-token",
+                user_info={"sub": "user-1"},
+                registry_api_url="https://registry.example.test/v0.1",
+            ),
+        ),
+        patch(
+            "lightnow_cli.commands.integrations.config_manager.persist_current_session",
+            return_value=binding,
+        ),
+        patch(
+            "lightnow_cli.commands.integrations.fetch_integration_settings",
+            return_value={
+                "localProxy": {
+                    "enabled": True,
+                    "managedClients": ["librechat"],
+                    "profile": "engineering",
+                    "allowUnmanagedClientServers": allow_unmanaged,
+                    "telemetryEnabled": True,
+                    "policyMode": "enforce",
+                }
+            },
+        ),
+    ):
+        result = CliRunner().invoke(
+            app,
+            [
+                "sync",
+                "--client",
+                "librechat",
+                "--from-settings",
+                "--tenant",
+                "tenant-1",
+                "--config-path",
+                str(target),
+                "--local-proxy-config-path",
+                str(proxy),
+                "--yes",
+            ],
+        )
+    assert result.exit_code == 0, result.output
+    actual = yaml.safe_load(target.read_text())
+    assert actual["version"] == original["version"]
+    assert actual["endpoints"] == original["endpoints"]
+    assert ("external" in actual["mcpServers"]) == allow_unmanaged
+    assert actual["mcpServers"]["LightNow"]["type"] == "stdio"
+    assert (
+        yaml.safe_load(target.with_suffix(".yaml.lightnow.bak").read_text()) == original
+    )
+    runtime = yaml.safe_load(proxy.read_text())
+    assert runtime["upstreams"] == {}
+    assert runtime["local_proxy"]["client_name"] == "librechat"
+    assert runtime["local_proxy"]["client_transport"] == "stdio"
+    assert runtime["local_proxy"]["profile"] == "engineering"
+    assert runtime["local_proxy"]["scope_id"] == "tenant-1"
+    assert runtime["registry_api"]["expected_subject"] == "user-1"
+    assert runtime["registry_api"]["expected_issuer"] == binding["issuer"]
+    assert runtime["registry_api"]["cli_session_path"] == binding["path"]
+    assert "synthetic-token" not in proxy.read_text()
+    assert "synthetic-secret" not in result.output
+    assert target.stat().st_mode & 0o777 == 0o600
+    assert proxy.stat().st_mode & 0o777 == 0o600
+    assert stub_device_registration.call_args.kwargs["client"] == "librechat"
+    assert stub_device_registration.call_args.kwargs["tenant"] == "tenant-1"
+    posture = analyze_client_config_file(
+        client="librechat",
+        export_format="yaml",
+        path=target,
+        expected_proxy_config_path=proxy,
+    )
+    assert posture["status"] == ("mixed" if allow_unmanaged else "managed")
+    assert posture["local_proxy_connections"][0]["transport"] == "stdio"
+
+
+def test_librechat_sync_is_idempotent_and_keeps_sibling_connections(tmp_path) -> None:
+    target = tmp_path / "librechat.yaml"
+    target.write_text("version: 1.2.8\n")
+    previous = None
+    with patch(
+        "lightnow_cli.commands.integrations.require_access_token",
+        return_value="synthetic-token",
+    ):
+        for alias in ["lightnow-personal", "lightnow-team", "lightnow-team"]:
+            result = CliRunner().invoke(
+                app,
+                [
+                    "sync",
+                    "--client",
+                    "librechat",
+                    "--local-proxy",
+                    "--connection",
+                    alias,
+                    "--local-proxy-config-path",
+                    str(tmp_path / f"{alias}.yaml"),
+                    "--config-path",
+                    str(target),
+                    "--yes",
+                ],
+            )
+            assert result.exit_code == 0, result.output
+            if alias == "lightnow-team":
+                current = target.read_text()
+                if previous is not None:
+                    assert current == previous
+                previous = current
+    entries = yaml.safe_load(target.read_text())["mcpServers"]
+    assert set(entries) == {"lightnow-personal", "lightnow-team"}
+    assert entries["lightnow-personal"]["args"][1] == str(
+        tmp_path / "lightnow-personal.yaml"
+    )
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "mcpServers: [secret-value]",
+        "[secret-value]",
+        "mcpServers: {bad: secret-value}",
+        "mcpServers: {}\nmcpServers: {secret-value: {}}",
+        "value: [secret-value",
+        "!!python/object:secret-value {}",
+    ],
+)
+def test_librechat_sync_refuses_invalid_yaml_without_writes_or_source_output(
+    tmp_path, content
+) -> None:
+    target = tmp_path / "librechat.yaml"
+    proxy = tmp_path / "proxy.yaml"
+    target.write_text(content)
+    with patch(
+        "lightnow_cli.commands.integrations.require_access_token",
+        return_value="synthetic-token",
+    ):
+        result = CliRunner().invoke(
+            app,
+            [
+                "sync",
+                "--client",
+                "librechat",
+                "--local-proxy",
+                "--local-proxy-config-path",
+                str(proxy),
+                "--config-path",
+                str(target),
+                "--yes",
+            ],
+        )
+    assert result.exit_code == 1
+    assert "invalid_yaml" in result.output
+    assert "secret-value" not in result.output
+    assert target.read_text() == content
+    assert not proxy.exists()
+
+
+def test_librechat_config_status_command_reads_yaml(tmp_path) -> None:
+    target = tmp_path / "librechat.yaml"
+    proxy = tmp_path / "proxy.yaml"
+    target.write_text(
+        build_local_proxy_export(
+            client="librechat",
+            export_format="yaml",
+            local_proxy_url="http://127.0.0.1:8080/mcp",
+            local_proxy_config_path=proxy,
+        )
+    )
+    result = CliRunner().invoke(
+        app,
+        [
+            "config-status",
+            "--client",
+            "librechat",
+            "--config-path",
+            str(target),
+            "--local-proxy-config-path",
+            str(proxy),
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    posture = json.loads(result.output)
+    assert posture["local_proxy_present"] is True
+    assert posture["local_proxy_connections"][0]["config_path"] == str(proxy)
+
+
+def test_librechat_sync_preserves_yaml_anchors_and_merges(tmp_path) -> None:
+    target = tmp_path / "librechat.yaml"
+    target.write_text(
+        "version: 1.2.8\nbase: &base {timeout: 10000}\nmcpServers:\n  LightNow:\n    <<: *base\n    timeout: 20000\n    command: lightnow-proxy\n"
+    )
+    with patch(
+        "lightnow_cli.commands.integrations.require_access_token",
+        return_value="synthetic-token",
+    ):
+        result = CliRunner().invoke(
+            app,
+            [
+                "sync",
+                "--client",
+                "librechat",
+                "--local-proxy",
+                "--connection",
+                "lightnow-team",
+                "--local-proxy-config-path",
+                str(tmp_path / "proxy.yaml"),
+                "--config-path",
+                str(target),
+                "--yes",
+            ],
+        )
+    assert result.exit_code == 0, result.output
+    actual = yaml.safe_load(target.read_text())
+    assert actual["base"] == {"timeout": 10000}
+    assert actual["mcpServers"]["LightNow"]["timeout"] == 20000
+    assert actual["mcpServers"]["lightnow-team"]["type"] == "stdio"
