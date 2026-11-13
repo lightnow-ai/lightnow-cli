@@ -4,6 +4,13 @@ All notable changes to the LightNow CLI are documented here.
 
 This project follows semantic versioning.
 
+## [1.7.0](https://github.com/lightnow-ai/lightnow-cli/compare/v1.6.1...v1.7.0) (2026-11-13)
+
+
+### Features
+
+* support LibreChat local proxy configuration ([#47](https://github.com/lightnow-ai/lightnow-cli/issues/47)) ([fffb3ca](https://github.com/lightnow-ai/lightnow-cli/commit/fffb3ca2ac8c87f08e9938bfcb54e3952fcb23f7))
+
 ## [1.6.1](https://github.com/lightnow-ai/lightnow-cli/compare/v1.6.0...v1.6.1) (2026-11-09)
 
 
