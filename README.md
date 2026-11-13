@@ -226,9 +226,13 @@ lightnow config-status --client librechat --config-path /path/to/librechat.yaml
 
 The generated stdio entry starts the proxy from LibreChat's backend. Its executable,
 private proxy configuration, and LightNow login session must remain accessible
-there. Reload LibreChat after updating its operator configuration. Sync preserves
-other LibreChat settings and backs up the original file; YAML formatting and
-comments are normalized. LibreChat Local Proxy mode supports stdio only.
+there. The connection uses that backend account's LightNow login and organization.
+LibreChat users who can access the connection share its tool permissions; their
+individual chat identities are not mapped to separate LightNow sessions.
+
+Reload LibreChat after updating its operator configuration. Sync preserves other
+LibreChat settings and backs up the original file; YAML formatting and comments
+are normalized. LibreChat Local Proxy mode supports stdio only.
 
 Let LightNow choose the configured organization policy for a client:
 
