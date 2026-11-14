@@ -4,6 +4,13 @@ All notable changes to the LightNow CLI are documented here.
 
 This project follows semantic versioning.
 
+## [1.7.1](https://github.com/lightnow-ai/lightnow-cli/compare/v1.7.0...v1.7.1) (2026-11-14)
+
+
+### Bug Fixes
+
+* honor profile revisions when importing MCP config ([#50](https://github.com/lightnow-ai/lightnow-cli/issues/50)) ([343ab0d](https://github.com/lightnow-ai/lightnow-cli/commit/343ab0d545c19d3c9a44fb9097ed06e5f00ca3fb))
+
 ## [1.7.0](https://github.com/lightnow-ai/lightnow-cli/compare/v1.6.1...v1.7.0) (2026-11-13)
 
 
