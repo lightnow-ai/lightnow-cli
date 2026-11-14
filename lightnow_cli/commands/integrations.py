@@ -898,7 +898,9 @@ def import_config(
     ] = "default",
     tenant: Annotated[
         Optional[str],
-        typer.Option("--tenant", help="Tenant id or slug, sent as X-Tenant"),
+        typer.Option(
+            "--tenant", help="Organization ID; defaults to the selected context"
+        ),
     ] = None,
     config_path: Annotated[
         Optional[Path],
@@ -1699,7 +1701,34 @@ def import_profile_config(
 ) -> dict[str, Any]:
     """Import rendered client config into a LightNow runtime profile."""
     url = f"{api_url.rstrip('/')}/integrations/import"
+    headers = {"Accept": "application/json"}
     try:
+        if not dry_run:
+            current = request_with_refresh(
+                "GET",
+                f"{api_url.rstrip('/')}/integrations/profiles",
+                headers=headers,
+                token=token,
+                tenant=tenant,
+                timeout=30.0,
+            )
+            if current.status_code == 401:
+                raise authentication_error_from_response(current)
+            if current.status_code != 200:
+                raise ValueError(f"HTTP {current.status_code}: {redact(current.text)}")
+            etag = current.headers.get("ETag")
+            if (
+                etag is None
+                or re.fullmatch(r'"[\x21\x23-\x7e\x80-\xff]*"', etag) is None
+            ):
+                raise ValueError(
+                    "Could not read the current profile version. No import was applied."
+                )
+            headers["If-Match"] = etag
+            # The snapshot request may have refreshed an expired session.
+            authorization = current.request.headers.get("Authorization", "")
+            if authorization.startswith("Bearer "):
+                token = authorization.removeprefix("Bearer ")
         response = request_with_refresh(
             "POST",
             url,
@@ -1710,7 +1739,7 @@ def import_profile_config(
                 "profile": {"name": profile},
                 "replace": replace,
             },
-            headers={"Accept": "application/json"},
+            headers=headers,
             token=token,
             tenant=tenant,
             timeout=30.0,
