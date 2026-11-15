@@ -76,6 +76,10 @@ For help, see [Troubleshoot the connection](https://docs.lightnow.ai/how-to/debu
 | Check for updates | `lightnow update --check` |
 | Update the CLI and proxy | `lightnow update` |
 
+With `--from-settings`, add `--profile NAME` to select a different Runtime profile
+while retaining the configured mode and other settings. Without `--profile`, the
+configured profile is used.
+
 Use `lightnow --help` or `lightnow <command> --help` for available options.
 For profiles, organization connections and other workflows, see the
 [CLI reference](https://docs.lightnow.ai/reference/cli).

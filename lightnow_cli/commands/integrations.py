@@ -365,9 +365,13 @@ def print_empty_profile_import_hint(
 
 @app.command("sync")
 def sync(
+    ctx: typer.Context,
     client: Annotated[str, typer.Option("--client", help="Target MCP client")],
     profile: Annotated[
-        str, typer.Option("--profile", help="Runtime profile")
+        str,
+        typer.Option(
+            "--profile", help="Runtime profile; overrides the settings profile"
+        ),
     ] = "default",
     tenant: Annotated[
         Optional[str],
@@ -515,6 +519,10 @@ def sync(
     remove_unmanaged_client_servers = local_proxy
     policy_managed_sync = False
     session_binding: dict[str, str] | None = None
+    profile_source = ctx.get_parameter_source("profile")
+    profile_is_explicit = (
+        profile_source is not None and profile_source.name == "COMMANDLINE"
+    )
 
     try:
         if from_settings:
@@ -540,9 +548,15 @@ def sync(
                     local_proxy_settings.get("allowUnmanagedClientServers") is False
                 )
                 configured_profile = local_proxy_settings.get("profile")
-                if isinstance(configured_profile, str) and configured_profile:
+                if (
+                    not profile_is_explicit
+                    and isinstance(configured_profile, str)
+                    and configured_profile
+                ):
                     profile = configured_profile
-            elif isinstance(settings_payload.get("defaultProfile"), str):
+            elif not profile_is_explicit and isinstance(
+                settings_payload.get("defaultProfile"), str
+            ):
                 profile = str(settings_payload["defaultProfile"])
 
         if local_proxy:
