@@ -66,8 +66,12 @@ from lightnow_cli.main import app
 
 @pytest.fixture(autouse=True)
 def stub_device_registration():
-    """Keep existing Local Proxy sync tests isolated from the Registry API."""
+    """Keep Local Proxy sync tests isolated from profile and device API calls."""
     with (
+        patch(
+            "lightnow_cli.commands.integrations.fetch_profile_servers",
+            return_value={"servers": []},
+        ),
         patch(
             "lightnow_cli.commands.integrations.register_runtime_device_client"
         ) as registration,
@@ -1065,10 +1069,8 @@ def test_sync_runner_dry_run_does_not_fetch_plaintext_export() -> None:
     assert not target.exists()
 
 
-def test_sync_local_proxy_dry_run_writes_one_codex_entry_without_fetching_exports() -> (
-    None
-):
-    """Local Proxy dry-run writes only the proxy binding and skips server export APIs."""
+def test_sync_local_proxy_dry_run_checks_profile_without_fetching_exports() -> None:
+    """Local Proxy dry-run checks access but never requests plaintext exports."""
     runner = CliRunner()
     with tempfile.TemporaryDirectory() as tmp:
         target = Path(tmp) / "config.toml"
@@ -1079,10 +1081,8 @@ def test_sync_local_proxy_dry_run_writes_one_codex_entry_without_fetching_export
             ),
             patch(
                 "lightnow_cli.commands.integrations.fetch_profile_servers",
-                side_effect=AssertionError(
-                    "local proxy sync must not fetch profile servers"
-                ),
-            ),
+                return_value={"servers": []},
+            ) as fetch_profile,
             patch(
                 "lightnow_cli.commands.integrations.fetch_export",
                 side_effect=AssertionError(
@@ -1105,6 +1105,8 @@ def test_sync_local_proxy_dry_run_writes_one_codex_entry_without_fetching_export
             )
 
     assert result.exit_code == 0
+    fetch_profile.assert_called_once()
+    assert fetch_profile.call_args.kwargs["profile"] == "default"
     assert "[mcp_servers.lightnow]" in result.stdout
     assert 'command = "lightnow-proxy"' in result.stdout
     assert "--transport" in result.stdout

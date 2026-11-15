@@ -560,6 +560,16 @@ def sync(
                 profile = str(settings_payload["defaultProfile"])
 
         if local_proxy:
+            profile_payload = fetch_profile_servers(
+                api_url=registry_api_url,
+                token=bearer_token,
+                tenant=effective_tenant,
+                profile=profile,
+            )
+            if not isinstance(profile_payload.get("servers"), list):
+                raise ValueError(
+                    "Registry API response did not include profile servers."
+                )
             active_config = config_manager.load_config()
             if active_config.access_token == bearer_token:
                 identity = active_config.user_info or get_user_info(bearer_token)
