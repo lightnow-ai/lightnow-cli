@@ -12,6 +12,8 @@ runs their connections to the servers in your Runtime profiles.
 You need a [LightNow account](https://lightnow.ai/), an AI client and a Runtime
 profile with the server connections you want to use.
 
+Prefer setup with a coding agent? [Use the LightNow setup skill](skills/lightnow-setup/SKILL.md).
+
 ### 1. Install the CLI and proxy
 
 With Homebrew:
