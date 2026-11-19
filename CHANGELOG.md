@@ -4,6 +4,13 @@ All notable changes to the LightNow CLI are documented here.
 
 This project follows semantic versioning.
 
+## [1.7.2](https://github.com/lightnow-ai/lightnow-cli/compare/v1.7.1...v1.7.2) (2026-11-19)
+
+
+### Bug Fixes
+
+* **deps:** update dependency allure-pytest to v2.16.2 ([#54](https://github.com/lightnow-ai/lightnow-cli/issues/54)) ([1fd8440](https://github.com/lightnow-ai/lightnow-cli/commit/1fd84404a8905027de1b93c0424fe337b15ec275))
+
 ## [1.7.1](https://github.com/lightnow-ai/lightnow-cli/compare/v1.7.0...v1.7.1) (2026-11-14)
 
 
