@@ -66,8 +66,12 @@ from lightnow_cli.main import app
 
 @pytest.fixture(autouse=True)
 def stub_device_registration():
-    """Keep existing Local Proxy sync tests isolated from the Registry API."""
+    """Keep Local Proxy sync tests isolated from profile and device API calls."""
     with (
+        patch(
+            "lightnow_cli.commands.integrations.fetch_profile_servers",
+            return_value={"servers": []},
+        ),
         patch(
             "lightnow_cli.commands.integrations.register_runtime_device_client"
         ) as registration,
@@ -1065,10 +1069,8 @@ def test_sync_runner_dry_run_does_not_fetch_plaintext_export() -> None:
     assert not target.exists()
 
 
-def test_sync_local_proxy_dry_run_writes_one_codex_entry_without_fetching_exports() -> (
-    None
-):
-    """Local Proxy dry-run writes only the proxy binding and skips server export APIs."""
+def test_sync_local_proxy_dry_run_checks_profile_without_fetching_exports() -> None:
+    """Local Proxy dry-run checks access but never requests plaintext exports."""
     runner = CliRunner()
     with tempfile.TemporaryDirectory() as tmp:
         target = Path(tmp) / "config.toml"
@@ -1079,10 +1081,8 @@ def test_sync_local_proxy_dry_run_writes_one_codex_entry_without_fetching_export
             ),
             patch(
                 "lightnow_cli.commands.integrations.fetch_profile_servers",
-                side_effect=AssertionError(
-                    "local proxy sync must not fetch profile servers"
-                ),
-            ),
+                return_value={"servers": []},
+            ) as fetch_profile,
             patch(
                 "lightnow_cli.commands.integrations.fetch_export",
                 side_effect=AssertionError(
@@ -1105,6 +1105,8 @@ def test_sync_local_proxy_dry_run_writes_one_codex_entry_without_fetching_export
             )
 
     assert result.exit_code == 0
+    fetch_profile.assert_called_once()
+    assert fetch_profile.call_args.kwargs["profile"] == "default"
     assert "[mcp_servers.lightnow]" in result.stdout
     assert 'command = "lightnow-proxy"' in result.stdout
     assert "--transport" in result.stdout
@@ -2070,8 +2072,22 @@ def test_configure_vscode_virtual_tools_creates_settings() -> None:
     assert payload == {"github.copilot.chat.virtualTools.threshold": 128}
 
 
-def test_sync_from_settings_uses_local_proxy_policy() -> None:
-    """Settings-driven sync switches managed clients into Local Proxy mode."""
+@pytest.mark.parametrize(
+    ("profile_args", "expected_profile"),
+    [
+        ([], "engineering"),
+        (["--profile", "customer-profile"], "customer-profile"),
+        (["--profile", "default"], "default"),
+    ],
+)
+@pytest.mark.parametrize("telemetry_enabled", [True, False])
+def test_sync_from_settings_uses_local_proxy_policy(
+    profile_args: list[str],
+    expected_profile: str,
+    telemetry_enabled: bool,
+    stub_device_registration,
+) -> None:
+    """An explicit profile preserves the remaining managed Local Proxy policy."""
     runner = CliRunner()
     with tempfile.TemporaryDirectory() as tmp:
         target = Path(tmp) / "config.toml"
@@ -2090,12 +2106,12 @@ def test_sync_from_settings_uses_local_proxy_policy() -> None:
                         "profile": "engineering",
                         "managedClients": ["codex"],
                         "allowUnmanagedClientServers": False,
-                        "telemetryEnabled": True,
+                        "telemetryEnabled": telemetry_enabled,
                         "captureToolArguments": False,
                         "policyMode": "enforce",
                     },
                 },
-            ),
+            ) as settings_mock,
         ):
             result = runner.invoke(
                 app,
@@ -2104,6 +2120,9 @@ def test_sync_from_settings_uses_local_proxy_policy() -> None:
                     "--client",
                     "codex",
                     "--from-settings",
+                    *profile_args,
+                    "--tenant",
+                    "tenant-example",
                     "--config-path",
                     str(target),
                     "--local-proxy-config-path",
@@ -2116,12 +2135,19 @@ def test_sync_from_settings_uses_local_proxy_policy() -> None:
 
     assert result.exit_code == 0
     assert "[mcp_servers.lightnow]" in patched
-    assert proxy_payload["local_proxy"]["profile"] == "engineering"
+    assert settings_mock.call_args.kwargs["tenant"] == "tenant-example"
+    assert proxy_payload["registry_api"]["cli_tenant_id"] == "tenant-example"
+    assert proxy_payload["local_proxy"]["profile"] == expected_profile
     assert proxy_payload["local_proxy"]["client_name"] == "codex"
     assert proxy_payload["local_proxy"]["policy_mode"] == "enforce"
     assert proxy_payload["local_proxy"]["allow_unmanaged_client_servers"] is False
-    assert proxy_payload["local_proxy"]["telemetry_enabled"] is True
+    assert proxy_payload["local_proxy"]["telemetry_enabled"] is telemetry_enabled
     assert proxy_payload["local_proxy"]["capture_tool_arguments"] is False
+    if telemetry_enabled:
+        stub_device_registration.assert_called_once()
+        assert stub_device_registration.call_args.kwargs["profile"] == expected_profile
+    else:
+        stub_device_registration.assert_not_called()
     assert "policy is enforce" in result.stdout
 
 
@@ -2237,7 +2263,18 @@ args = ["run", "github-mcp"]
     assert "Removed direct MCP server entries" not in result.stdout
 
 
-def test_sync_from_settings_uses_direct_export_for_unmanaged_client() -> None:
+@pytest.mark.parametrize(
+    ("profile_args", "expected_profile"),
+    [
+        ([], "organization-default"),
+        (["--profile", "engineering"], "engineering"),
+        (["--profile", "default"], "default"),
+    ],
+)
+@pytest.mark.parametrize("proxy_enabled", [True, False])
+def test_sync_from_settings_uses_direct_export_for_unmanaged_client(
+    profile_args: list[str], expected_profile: str, proxy_enabled: bool
+) -> None:
     """Settings-driven sync leaves clients outside managedClients on direct config."""
     runner = CliRunner()
     with tempfile.TemporaryDirectory() as tmp:
@@ -2250,9 +2287,9 @@ def test_sync_from_settings_uses_direct_export_for_unmanaged_client() -> None:
             patch(
                 "lightnow_cli.commands.integrations.fetch_integration_settings",
                 return_value={
-                    "defaultProfile": "default",
+                    "defaultProfile": "organization-default",
                     "localProxy": {
-                        "enabled": True,
+                        "enabled": proxy_enabled,
                         "profile": "engineering",
                         "managedClients": ["claude-desktop"],
                         "policyMode": "observe",
@@ -2271,6 +2308,7 @@ def test_sync_from_settings_uses_direct_export_for_unmanaged_client() -> None:
                     "--client",
                     "codex",
                     "--from-settings",
+                    *profile_args,
                     "--config-path",
                     str(target),
                     "--yes",
@@ -2280,7 +2318,7 @@ def test_sync_from_settings_uses_direct_export_for_unmanaged_client() -> None:
 
     assert result.exit_code == 0
     export_mock.assert_called_once()
-    assert export_mock.call_args.kwargs["profile"] == "default"
+    assert export_mock.call_args.kwargs["profile"] == expected_profile
     assert "[mcp_servers.github]" in patched
 
 

@@ -12,6 +12,8 @@ runs their connections to the servers in your Runtime profiles.
 You need a [LightNow account](https://lightnow.ai/), an AI client and a Runtime
 profile with the server connections you want to use.
 
+Prefer setup with a coding agent? [Use the LightNow setup skill](skills/lightnow-setup/SKILL.md).
+
 ### 1. Install the CLI and proxy
 
 With Homebrew:
@@ -75,6 +77,10 @@ For help, see [Troubleshoot the connection](https://docs.lightnow.ai/how-to/debu
 | Use organization-managed client settings | `lightnow sync --client codex --from-settings` |
 | Check for updates | `lightnow update --check` |
 | Update the CLI and proxy | `lightnow update` |
+
+With `--from-settings`, add `--profile NAME` to select a different Runtime profile
+while retaining the configured mode and other settings. Without `--profile`, the
+configured profile is used.
 
 Use `lightnow --help` or `lightnow <command> --help` for available options.
 For profiles, organization connections and other workflows, see the
